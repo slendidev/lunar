@@ -13,6 +13,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "Util.h"
+#include "src/DescriptorLayoutBuilder.h"
 
 namespace Lunar {
 
@@ -34,6 +35,8 @@ Application::Application()
 	swapchain_init();
 	commands_init();
 	sync_init();
+	descriptors_init();
+	pipelines_init();
 
 	m_logger.info("App init done!");
 }
@@ -156,7 +159,7 @@ auto Application::swapchain_init() -> void
 {
 	int w, h;
 	SDL_GetWindowSize(m_window, &w, &h);
-	create_swapchain(w, h);
+	create_swapchain(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 	create_draw_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 }
 
@@ -210,12 +213,85 @@ auto Application::sync_init() -> void
 	}
 }
 
+auto Application::descriptors_init() -> void
+{
+	std::vector<DescriptorAllocator::PoolSizeRatio> sizes {
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
+	};
+	m_vk.descriptor_allocator.init_pool(m_vkb.dev, 10, sizes);
+
+	m_vk.draw_image_descriptor_layout
+	    = DescriptorLayoutBuilder()
+	          .add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+	          .build(m_logger, m_vkb.dev, VK_SHADER_STAGE_COMPUTE_BIT);
+
+	m_vk.draw_image_descriptors = m_vk.descriptor_allocator.allocate(
+	    m_logger, m_vkb.dev, m_vk.draw_image_descriptor_layout);
+
+	update_draw_image_descriptor();
+
+	m_vk.deletion_queue.emplace([&]() {
+		m_vk.descriptor_allocator.destroy_pool(m_vkb.dev);
+		vkDestroyDescriptorSetLayout(
+		    m_vkb.dev, m_vk.draw_image_descriptor_layout, nullptr);
+	});
+}
+
+auto Application::pipelines_init() -> void { background_pipelines_init(); }
+
+auto Application::background_pipelines_init() -> void
+{
+	VkPipelineLayoutCreateInfo layout_ci {};
+	layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layout_ci.pNext = nullptr;
+	layout_ci.pSetLayouts = &m_vk.draw_image_descriptor_layout;
+	layout_ci.setLayoutCount = 1;
+
+	VK_CHECK(m_logger,
+	    vkCreatePipelineLayout(
+	        m_vkb.dev, &layout_ci, nullptr, &m_vk.gradient_pipeline_layout));
+
+	uint8_t compute_draw_shader_data[] {
+#embed "gradient.spv"
+	};
+	VkShaderModule compute_draw_shader {};
+	if (!vkutil::load_shader_module(std::span<uint8_t>(compute_draw_shader_data,
+	                                    sizeof(compute_draw_shader_data)),
+	        m_vkb.dev, &compute_draw_shader)) {
+		m_logger.err("Failed to load gradient compute shader");
+	}
+
+	VkPipelineShaderStageCreateInfo stage_ci {};
+	stage_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stage_ci.pNext = nullptr;
+	stage_ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	stage_ci.module = compute_draw_shader;
+	stage_ci.pName = "main";
+
+	VkComputePipelineCreateInfo compute_pip_ci {};
+	compute_pip_ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	compute_pip_ci.pNext = nullptr;
+	compute_pip_ci.layout = m_vk.gradient_pipeline_layout;
+	compute_pip_ci.stage = stage_ci;
+
+	VK_CHECK(m_logger,
+	    vkCreateComputePipelines(m_vkb.dev, VK_NULL_HANDLE, 1, &compute_pip_ci,
+	        nullptr, &m_vk.gradient_pipeline));
+
+	vkDestroyShaderModule(m_vkb.dev, compute_draw_shader, nullptr);
+	m_vk.deletion_queue.emplace([&]() {
+		vkDestroyPipelineLayout(
+		    m_vkb.dev, m_vk.gradient_pipeline_layout, nullptr);
+		vkDestroyPipeline(m_vkb.dev, m_vk.gradient_pipeline, nullptr);
+	});
+}
+
 auto Application::render() -> void
 {
 	defer(m_vk.frame_number++);
 
-	if (m_vk.swapchain == VK_NULL_HANDLE
-	    || m_vk.swapchain_extent.width == 0 || m_vk.swapchain_extent.height == 0) {
+	if (m_vk.swapchain == VK_NULL_HANDLE || m_vk.swapchain_extent.width == 0
+	    || m_vk.swapchain_extent.height == 0) {
 		return;
 	}
 
@@ -319,20 +395,14 @@ auto Application::render() -> void
 
 auto Application::draw_background(VkCommandBuffer cmd) -> void
 {
-	VkClearColorValue clear_value;
-	float flash { std::abs(std::sin(m_vk.frame_number / 60.f)) };
-	clear_value = { { 0x64 / 255.0f * flash, 0x95 / 255.0f * flash,
-		0xED / 255.0f * flash, 1.0f } };
-
-	VkImageSubresourceRange clear_range {
-		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-		.baseMipLevel = 0,
-		.levelCount = 1,
-		.baseArrayLayer = 0,
-		.layerCount = 1,
-	};
-	vkCmdClearColorImage(cmd, m_vk.draw_image.image, VK_IMAGE_LAYOUT_GENERAL,
-	    &clear_value, 1, &clear_range);
+	vkCmdBindPipeline(
+	    cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_vk.gradient_pipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+	    m_vk.gradient_pipeline_layout, 0, 1, &m_vk.draw_image_descriptors, 0,
+	    nullptr);
+	vkCmdDispatch(cmd,
+	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.width / 16.0)),
+	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.height / 16.0)), 1);
 }
 
 auto Application::create_swapchain(uint32_t width, uint32_t height) -> void
@@ -404,6 +474,25 @@ auto Application::create_draw_image(uint32_t width, uint32_t height) -> void
 	        m_vkb.dev, &rview_ci, nullptr, &m_vk.draw_image.image_view));
 }
 
+auto Application::update_draw_image_descriptor() -> void
+{
+	// Point the storage image descriptor at the current draw image view
+	VkDescriptorImageInfo img_info {};
+	img_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	img_info.imageView = m_vk.draw_image.image_view;
+
+	VkWriteDescriptorSet draw_img_write {};
+	draw_img_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	draw_img_write.pNext = nullptr;
+	draw_img_write.dstBinding = 0;
+	draw_img_write.dstSet = m_vk.draw_image_descriptors;
+	draw_img_write.descriptorCount = 1;
+	draw_img_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	draw_img_write.pImageInfo = &img_info;
+
+	vkUpdateDescriptorSets(m_vkb.dev, 1, &draw_img_write, 0, nullptr);
+}
+
 auto Application::destroy_draw_image() -> void
 {
 	if (m_vk.draw_image.image_view != VK_NULL_HANDLE) {
@@ -435,6 +524,7 @@ auto Application::recreate_swapchain(uint32_t width, uint32_t height) -> void
 
 	create_swapchain(width, height);
 	create_draw_image(width, height);
+	update_draw_image_descriptor();
 }
 
 auto Application::destroy_swapchain() -> void
@@ -496,8 +586,8 @@ auto Application::run() -> void
 			} else if (e.type == SDL_EVENT_WINDOW_RESIZED) {
 				int width {}, height {};
 				SDL_GetWindowSize(m_window, &width, &height);
-				recreate_swapchain(
-				    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+				recreate_swapchain(static_cast<uint32_t>(width),
+				    static_cast<uint32_t>(height));
 			}
 		}
 

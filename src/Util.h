@@ -1,16 +1,14 @@
 #pragma once
 
-#include <string_view>
+#include <span>
 
 #include <vulkan/vk_enum_string_helper.h>
 #include <vulkan/vulkan.h>
 
-using namespace std::string_view_literals;
-
 template<typename F> struct privDefer {
 	F f;
-	privDefer(F f)
-	    : f(f)
+	privDefer(F f_)
+	    : f(f_)
 	{
 	}
 	~privDefer() { f(); }
@@ -44,6 +42,8 @@ auto transition_image(VkCommandBuffer cmd, VkImage image,
     VkImageLayout current_layout, VkImageLayout new_layout) -> void;
 auto copy_image_to_image(VkCommandBuffer cmd, VkImage source,
     VkImage destination, VkExtent2D src_size, VkExtent2D dst_size) -> void;
+auto load_shader_module(std::span<uint8_t> spirv_data, VkDevice device,
+    VkShaderModule *out_shader_module) -> bool;
 
 } // namespace vkutil
 

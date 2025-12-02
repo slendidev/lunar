@@ -1,7 +1,7 @@
 project('vr-compositor', 'cpp',
 	version: '0.1',
 	default_options: [
-		'cpp_std=c++23',
+		'cpp_std=c++26',
 		'warning_level=everything',
 		'werror=true',
 	]
@@ -28,10 +28,21 @@ vkbootstrap_dep = cc.find_library(
 	required: true,
 )
 
+add_project_arguments('-Wpedantic', language : ['c', 'cpp'])
 add_project_arguments(
-	'-Wpedantic',
-	language : ['c', 'cpp']
+	[
+		'-Wno-c++98-compat',
+		'-Wno-c++98-compat-pedantic',
+		'-Wno-covered-switch-default',
+		'-Wno-undef',
+		'-Wno-padded',
+		'-Wno-unsafe-buffer-usage',
+		'-Wno-c23-extensions',
+	],
+	language : 'cpp'
 )
+
+subdir('shaders')
 
 exe = executable('vr-compositor',
 	[
@@ -39,6 +50,8 @@ exe = executable('vr-compositor',
 		'src/Impls.cpp',
 		'src/Util.cpp',
 		'src/Logger.cpp',
+		'src/DescriptorLayoutBuilder.cpp',
+		'src/DescriptorAllocator.cpp',
 		'src/Application.cpp',
 	],
 	include_directories: vkbootstrap_inc,
@@ -49,5 +62,8 @@ exe = executable('vr-compositor',
 		vkbootstrap_dep,
 		zlib_dep,
 		sdl3_dep,
-	]
+	],
+	cpp_args: [
+		'--embed-dir=' + join_paths(meson.project_build_root(), 'shaders')
+	],
 )

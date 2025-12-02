@@ -31,7 +31,7 @@
 #define FG_GRAY "\033[90m"
 #define ANSI_RESET "\033[0m"
 
-std::filesystem::path get_log_path(std::string_view app_name)
+static std::filesystem::path get_log_path(std::string_view app_name)
 {
 #ifdef _WIN32
 	PWSTR path = nullptr;
@@ -53,7 +53,7 @@ std::filesystem::path get_log_path(std::string_view app_name)
 }
 
 #ifndef __EMSCRIPTEN__
-int compress_file(std::filesystem::path const &input_path,
+static int compress_file(std::filesystem::path const &input_path,
     std::filesystem::path const &output_path)
 {
 	size_t const chunk_size = 4096;
@@ -69,7 +69,7 @@ int compress_file(std::filesystem::path const &input_path,
 
 	std::vector<char> buffer(chunk_size);
 	while (in) {
-		in.read(buffer.data(), buffer.size());
+		in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
 		std::streamsize bytes = in.gcount();
 		if (bytes > 0)
 			gzwrite(out, buffer.data(), static_cast<unsigned int>(bytes));
@@ -99,12 +99,14 @@ Logger::Logger(std::string_view app_name)
 		if (!file.is_regular_file())
 			continue;
 
-		int v;
-		if (std::sscanf(
-		        file.path().filename().stem().string().c_str(), "log_%d", &v)
-		    != 1) {
+		auto name = file.path().filename().stem().string();
+		constexpr std::string_view prefix = "log_";
+
+		if (name.rfind(prefix, 0) != 0) {
 			continue;
 		}
+
+		int v = std::stoi(name.substr(prefix.size()));
 		if (v > max)
 			max = v;
 
@@ -139,7 +141,7 @@ auto Logger::err(std::string_view msg) -> void
 	log(Logger::Level::Error, msg);
 }
 
-std::string get_current_time_string()
+static std::string get_current_time_string()
 {
 	auto now { std::chrono::system_clock::now() };
 	auto now_c { std::chrono::system_clock::to_time_t(now) };

@@ -10,6 +10,7 @@
 #include "AllocatedImage.h"
 #include "DeletionQueue.h"
 #include "Logger.h"
+#include "src/DescriptorAllocator.h"
 
 namespace Lunar {
 
@@ -35,12 +36,16 @@ private:
 	auto swapchain_init() -> void;
 	auto commands_init() -> void;
 	auto sync_init() -> void;
+	auto descriptors_init() -> void;
+	auto pipelines_init() -> void;
+	auto background_pipelines_init() -> void;
 
 	auto draw_background(VkCommandBuffer cmd) -> void;
 	auto render() -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
 	auto create_draw_image(uint32_t width, uint32_t height) -> void;
+	auto update_draw_image_descriptor() -> void;
 	auto destroy_draw_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
@@ -54,11 +59,11 @@ private:
 
 	struct {
 		VkSwapchainKHR swapchain { VK_NULL_HANDLE };
-		VkFormat swapchain_image_format;
 		VkSurfaceKHR surface { nullptr };
+		VkFormat swapchain_image_format;
 
-		VkQueue graphics_queue { nullptr };
 		uint32_t graphics_queue_family { 0 };
+		VkQueue graphics_queue { nullptr };
 
 		std::vector<VkImage> swapchain_images;
 		std::vector<VkImageView> swapchain_image_views;
@@ -75,6 +80,13 @@ private:
 		VkExtent2D draw_extent {};
 
 		VmaAllocator allocator;
+		DescriptorAllocator descriptor_allocator;
+
+		VkDescriptorSet draw_image_descriptors;
+		VkDescriptorSetLayout draw_image_descriptor_layout;
+
+		VkPipeline gradient_pipeline {};
+		VkPipelineLayout gradient_pipeline_layout {};
 
 		DeletionQueue deletion_queue;
 

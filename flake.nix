@@ -21,6 +21,8 @@
           meson
           ninja
           pkg-config
+          glslang
+          shaderc
         ];
         buildInputs = with pkgs; [
           vulkan-loader

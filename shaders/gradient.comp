@@ -1,0 +1,23 @@
+#version 460
+
+layout (local_size_x = 16, local_size_y = 16) in;
+layout(rgba16f, set = 0, binding = 0) uniform image2D image;
+
+void main() {
+	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(image);
+
+	if (texelCoord.x >= size.x || texelCoord.y >= size.y)
+		return;
+
+	vec2 uv = (vec2(texelCoord) + 0.5) / vec2(size);
+
+	float v = sin(uv.x * 10.0) + cos(uv.y * 10.0);
+
+	float r = 0.5 + 0.5 * cos(6.2831 * (uv.x + v));
+	float g = 0.5 + 0.5 * cos(6.2831 * (uv.y + v + 0.33));
+	float b = 0.5 + 0.5 * cos(6.2831 * (uv.x - uv.y + 0.66));
+
+	vec4 color = vec4(r, g, b, 1.0);
+	imageStore(image, texelCoord, color);
+}

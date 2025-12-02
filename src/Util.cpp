@@ -1,5 +1,7 @@
 #include "Util.h"
 
+#include <span>
+
 namespace vkutil {
 
 auto transition_image(VkCommandBuffer cmd, VkImage image,
@@ -73,6 +75,32 @@ auto copy_image_to_image(VkCommandBuffer cmd, VkImage source,
 	blit_info.pRegions = &blit_region;
 
 	vkCmdBlitImage2(cmd, &blit_info);
+}
+
+auto load_shader_module(std::span<uint8_t> spirv_data, VkDevice device,
+    VkShaderModule *out_shader_module) -> bool
+{
+	if (!device || !out_shader_module)
+		return false;
+
+	if (spirv_data.empty() || (spirv_data.size() % 4) != 0)
+		return false;
+
+	VkShaderModuleCreateInfo create_info {};
+	create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	create_info.pNext = nullptr;
+	create_info.flags = 0;
+	create_info.codeSize = spirv_data.size();
+	create_info.pCode = reinterpret_cast<uint32_t const *>(spirv_data.data());
+
+	VkResult const res = vkCreateShaderModule(
+	    device, &create_info, nullptr, out_shader_module);
+	if (res != VK_SUCCESS) {
+		*out_shader_module = VK_NULL_HANDLE;
+		return false;
+	}
+
+	return true;
 }
 
 } // namespace vkutil
