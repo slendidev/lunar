@@ -35,6 +35,7 @@ add_project_arguments(
 exe = executable('vr-compositor',
 	[
 		'src/main.cpp',
+		'src/Util.cpp',
 		'src/Logger.cpp',
 		'src/Application.cpp',
 	],

@@ -17,19 +17,21 @@
       let
         pkgs = import nixpkgs { inherit system; };
         nativeBuildInputs = with pkgs; [
+          cmake
+          meson
+          ninja
+          pkg-config
+        ];
+        buildInputs = with pkgs; [
           vulkan-loader
           vulkan-memory-allocator
           vulkan-validation-layers
+          vulkan-utility-libraries
           vk-bootstrap
           openxr-loader
           wayland
           zlib
           sdl3
-        ];
-        buildInputs = with pkgs; [
-          meson
-          ninja
-          pkg-config
         ];
       in
       {
@@ -62,7 +64,8 @@
                 CompileFlags:
                   Add: [
                     "-isystem", "${pkgs.llvmPackages_21.libcxx.dev}/include/c++/v1",
-                    "-isystem", "${pkgs.glibc.dev}/include"
+                    "-isystem", "${pkgs.glibc.dev}/include",
+                    "-I${pkgs.vulkan-utility-libraries}/include"
                   ]
                 EOF
               '';

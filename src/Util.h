@@ -1,6 +1,10 @@
 #pragma once
 
 #include <string_view>
+
+#include <vulkan/vk_enum_string_helper.h>
+#include <vulkan/vulkan.h>
+
 using namespace std::string_view_literals;
 
 template<typename F> struct privDefer {
@@ -24,3 +28,19 @@ template<typename F> privDefer<F> defer_func(F f) { return privDefer<F>(f); }
 #else
 #	define ALIGN(a) __attribute__((aligned(a)))
 #endif
+
+#define VK_CHECK(logger, x) \
+	do { \
+		VkResult err { x }; \
+		if (err) { \
+			(logger).err("Detected Vulkan error: {}", string_VkResult(err)); \
+			throw std::runtime_error("Vulkan error"); \
+		} \
+	} while (0)
+
+namespace vkutil {
+
+void transition_image(VkCommandBuffer cmd, VkImage image,
+    VkImageLayout current_layout, VkImageLayout new_layout);
+
+} // namespace vkutil
