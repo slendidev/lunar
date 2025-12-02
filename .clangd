@@ -1,6 +1,0 @@
-CompileFlags:
-  Add: [
-    "-isystem", "/nix/store/9hy16b0ba5bz0gd309rvhh119mn44f4j-libcxx-21.1.2-dev/include/c++/v1",
-    "-isystem", "/nix/store/jkqdwnd0ifr3fkjif3lz003an2fhbh17-glibc-2.40-66-dev/include",
-    "-I/nix/store/sqkna0r9zvxi7qdf8n6qckhibp1z2422-vulkan-utility-libraries-1.4.328.0/include"
-  ]
