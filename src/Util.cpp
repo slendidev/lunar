@@ -2,8 +2,8 @@
 
 namespace vkutil {
 
-void transition_image(VkCommandBuffer cmd, VkImage image,
-    VkImageLayout current_layout, VkImageLayout new_layout)
+auto transition_image(VkCommandBuffer cmd, VkImage image,
+    VkImageLayout current_layout, VkImageLayout new_layout) -> void
 {
 	VkImageAspectFlags aspect_mask
 	    = (new_layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)
@@ -31,10 +31,94 @@ void transition_image(VkCommandBuffer cmd, VkImage image,
 		},
 	};
 
-	vkCmdPipelineBarrier(cmd,
-	    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 	    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1,
 	    &image_barrier);
 }
 
+auto copy_image_to_image(VkCommandBuffer cmd, VkImage source,
+    VkImage destination, VkExtent2D src_size, VkExtent2D dst_size) -> void
+{
+	VkImageBlit2 blit_region {};
+	blit_region.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2;
+	blit_region.pNext = nullptr;
+
+	blit_region.srcOffsets[0] = { 0, 0, 0 };
+	blit_region.srcOffsets[1] = { static_cast<int32_t>(src_size.width),
+		static_cast<int32_t>(src_size.height), 1 };
+
+	blit_region.dstOffsets[0] = { 0, 0, 0 };
+	blit_region.dstOffsets[1] = { static_cast<int32_t>(dst_size.width),
+		static_cast<int32_t>(dst_size.height), 1 };
+
+	blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	blit_region.srcSubresource.baseArrayLayer = 0;
+	blit_region.srcSubresource.layerCount = 1;
+	blit_region.srcSubresource.mipLevel = 0;
+
+	blit_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	blit_region.dstSubresource.baseArrayLayer = 0;
+	blit_region.dstSubresource.layerCount = 1;
+	blit_region.dstSubresource.mipLevel = 0;
+
+	VkBlitImageInfo2 blit_info {};
+	blit_info.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2;
+	blit_info.pNext = nullptr;
+	blit_info.dstImage = destination;
+	blit_info.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	blit_info.srcImage = source;
+	blit_info.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	blit_info.filter = VK_FILTER_LINEAR;
+	blit_info.regionCount = 1;
+	blit_info.pRegions = &blit_region;
+
+	vkCmdBlitImage2(cmd, &blit_info);
+}
+
 } // namespace vkutil
+
+namespace vkinit {
+
+auto image_create_info(VkFormat format, VkImageUsageFlags usage_flags,
+    VkExtent3D extent) -> VkImageCreateInfo
+{
+	VkImageCreateInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	info.pNext = nullptr;
+
+	info.imageType = VK_IMAGE_TYPE_2D;
+
+	info.format = format;
+	info.extent = extent;
+
+	info.mipLevels = 1;
+	info.arrayLayers = 1;
+
+	info.samples = VK_SAMPLE_COUNT_1_BIT;
+
+	info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	info.usage = usage_flags;
+
+	return info;
+}
+
+auto imageview_create_info(VkFormat format, VkImage image,
+    VkImageAspectFlags aspect_flags) -> VkImageViewCreateInfo
+{
+	VkImageViewCreateInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	info.pNext = nullptr;
+
+	info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	info.image = image;
+	info.format = format;
+	info.subresourceRange.baseMipLevel = 0;
+	info.subresourceRange.levelCount = 1;
+	info.subresourceRange.baseArrayLayer = 0;
+	info.subresourceRange.layerCount = 1;
+	info.subresourceRange.aspectMask = aspect_flags;
+
+	return info;
+}
+
+} // namespace vkinit

@@ -1,6 +1,10 @@
 project('vr-compositor', 'cpp',
 	version: '0.1',
-	default_options: ['cpp_std=c++23']
+	default_options: [
+		'cpp_std=c++23',
+		'warning_level=everything',
+		'werror=true',
+	]
 )
 
 cc = meson.get_compiler('cpp')
@@ -25,16 +29,14 @@ vkbootstrap_dep = cc.find_library(
 )
 
 add_project_arguments(
-	'-Wall',
-	'-Wextra',
 	'-Wpedantic',
-	'-Werror',
 	language : ['c', 'cpp']
 )
 
 exe = executable('vr-compositor',
 	[
 		'src/main.cpp',
+		'src/Impls.cpp',
 		'src/Util.cpp',
 		'src/Logger.cpp',
 		'src/Application.cpp',

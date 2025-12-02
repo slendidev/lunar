@@ -40,7 +40,18 @@ template<typename F> privDefer<F> defer_func(F f) { return privDefer<F>(f); }
 
 namespace vkutil {
 
-void transition_image(VkCommandBuffer cmd, VkImage image,
-    VkImageLayout current_layout, VkImageLayout new_layout);
+auto transition_image(VkCommandBuffer cmd, VkImage image,
+    VkImageLayout current_layout, VkImageLayout new_layout) -> void;
+auto copy_image_to_image(VkCommandBuffer cmd, VkImage source,
+    VkImage destination, VkExtent2D src_size, VkExtent2D dst_size) -> void;
 
 } // namespace vkutil
+
+namespace vkinit {
+
+auto image_create_info(VkFormat format, VkImageUsageFlags usage_flags,
+    VkExtent3D extent) -> VkImageCreateInfo;
+auto imageview_create_info(VkFormat format, VkImage image,
+    VkImageAspectFlags aspect_flags) -> VkImageViewCreateInfo;
+
+} // namespace vkinit

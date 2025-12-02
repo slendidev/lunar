@@ -4,9 +4,12 @@
 
 #include <SDL3/SDL_video.h>
 #include <VkBootstrap.h>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan_core.h>
 
-#include "src/Logger.h"
+#include "AllocatedImage.h"
+#include "DeletionQueue.h"
+#include "Logger.h"
 
 namespace Lunar {
 
@@ -15,6 +18,8 @@ struct FrameData {
 	VkCommandBuffer main_command_buffer;
 	VkSemaphore swapchain_semaphore;
 	VkFence render_fence;
+
+	DeletionQueue deletion_queue;
 };
 
 constexpr unsigned FRAME_OVERLAP = 2;
@@ -31,9 +36,13 @@ private:
 	auto commands_init() -> void;
 	auto sync_init() -> void;
 
+	auto draw_background(VkCommandBuffer cmd) -> void;
 	auto render() -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
+	auto create_draw_image(uint32_t width, uint32_t height) -> void;
+	auto destroy_draw_image() -> void;
+	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
 
 	struct {
@@ -61,6 +70,13 @@ private:
 		{
 			return frames.at(frame_number % frames.size());
 		}
+
+		AllocatedImage draw_image {};
+		VkExtent2D draw_extent {};
+
+		VmaAllocator allocator;
+
+		DeletionQueue deletion_queue;
 
 		uint64_t frame_number { 0 };
 	} m_vk;
