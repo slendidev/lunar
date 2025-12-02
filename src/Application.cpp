@@ -67,7 +67,7 @@ auto Application::vk_init() -> void
 		        }
 
 		        app->m_logger.log(level,
-		            std::format("[{}] {}",
+		            std::format("[Vulkan] [{}] {}",
 		                vkb::to_string_message_type(message_type),
 		                callback_data->pMessage));
 
@@ -111,6 +111,9 @@ auto Application::vk_init() -> void
 	}
 	m_vkb.phys_dev = physical_device_selector_return.value();
 
+	m_logger.info("Chosen Vulkan physical device: {}",
+	    m_vkb.phys_dev.properties.deviceName);
+
 	vkb::DeviceBuilder device_builder { m_vkb.phys_dev };
 	auto dev_ret { device_builder.build() };
 	if (!dev_ret) {
@@ -153,22 +156,22 @@ auto Application::commands_init() -> void
 		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
 		.queueFamilyIndex = m_vk.graphics_queue_family,
 	};
-	for (unsigned i = 0; i < FRAME_OVERLAP; i++) {
+	for (auto &frame_data : m_vk.frames) {
 		VK_CHECK(m_logger,
 		    vkCreateCommandPool(
-		        m_vkb.dev, &ci, nullptr, &m_vk.frames.at(i).command_pool));
+		        m_vkb.dev, &ci, nullptr, &frame_data.command_pool));
 
 		VkCommandBufferAllocateInfo ai {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 			.pNext = nullptr,
-			.commandPool = m_vk.frames.at(i).command_pool,
+			.commandPool = frame_data.command_pool,
 			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
 			.commandBufferCount = 1,
 		};
 
 		VK_CHECK(m_logger,
 		    vkAllocateCommandBuffers(
-		        m_vkb.dev, &ai, &m_vk.frames.at(i).main_command_buffer));
+		        m_vkb.dev, &ai, &frame_data.main_command_buffer));
 	}
 }
 
