@@ -1,0 +1,2 @@
+option('vkbootstrap_dev', type: 'string', description: 'vk-bootstrap dev output path')
+option('vkbootstrap_lib', type: 'string', description: 'vk-bootstrap lib output path')
