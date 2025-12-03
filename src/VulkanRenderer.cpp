@@ -388,9 +388,9 @@ auto VulkanRenderer::imgui_init() -> void
 	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
 	pool_info.pPoolSizes = pool_sizes;
 
-	VkDescriptorPool imgui_pool;
-	VK_CHECK(m_logger,
-	    vkCreateDescriptorPool(m_vkb.dev, &pool_info, nullptr, &imgui_pool));
+	VK_CHECK(m_logger, vkCreateDescriptorPool(
+	                       m_vkb.dev, &pool_info, nullptr,
+	                       &m_vk.imgui_descriptor_pool));
 
 	ImGui::CreateContext();
 
@@ -401,7 +401,7 @@ auto VulkanRenderer::imgui_init() -> void
 	init_info.PhysicalDevice = m_vkb.phys_dev;
 	init_info.Device = m_vkb.dev;
 	init_info.Queue = m_vk.graphics_queue;
-	init_info.DescriptorPool = imgui_pool;
+	init_info.DescriptorPool = m_vk.imgui_descriptor_pool;
 	init_info.MinImageCount = 3;
 	init_info.ImageCount = 3;
 	init_info.UseDynamicRendering = true;
@@ -418,9 +418,15 @@ auto VulkanRenderer::imgui_init() -> void
 
 	ImGui_ImplVulkan_Init(&init_info);
 
-	m_vk.deletion_queue.emplace([&]() {
+	m_vk.deletion_queue.emplace([this]() {
 		ImGui_ImplVulkan_Shutdown();
-		vkDestroyDescriptorPool(m_vkb.dev, imgui_pool, nullptr);
+		ImGui_ImplSDL3_Shutdown();
+		ImGui::DestroyContext();
+		if (m_vk.imgui_descriptor_pool != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(
+			    m_vkb.dev, m_vk.imgui_descriptor_pool, nullptr);
+			m_vk.imgui_descriptor_pool = VK_NULL_HANDLE;
+		}
 	});
 }
 

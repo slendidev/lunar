@@ -95,6 +95,8 @@ private:
 		VkPipeline gradient_pipeline {};
 		VkPipelineLayout gradient_pipeline_layout {};
 
+		VkDescriptorPool imgui_descriptor_pool { VK_NULL_HANDLE };
+
 		DeletionQueue deletion_queue;
 
 		VkFence imm_fence {};

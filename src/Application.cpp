@@ -38,8 +38,6 @@ Application::~Application()
 {
 	m_renderer.reset();
 
-	ImGui::DestroyContext(m_imgui_context);
-
 	SDL_DestroyWindow(m_window);
 	SDL_Quit();
 

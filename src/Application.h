@@ -22,8 +22,6 @@ private:
 	Logger m_logger { "Lunar" };
 	std::unique_ptr<VulkanRenderer> m_renderer;
 
-	ImGuiContext *m_imgui_context;
-
 	bool m_running { true };
 };
 
