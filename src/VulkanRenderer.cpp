@@ -9,10 +9,12 @@
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
 #include <VkBootstrap.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_vulkan.h>
 #include <vulkan/vulkan_core.h>
 
+#include "DescriptorLayoutBuilder.h"
 #include "Util.h"
-#include "src/DescriptorLayoutBuilder.h"
 
 namespace Lunar {
 
@@ -30,6 +32,7 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
 	sync_init();
 	descriptors_init();
 	pipelines_init();
+	imgui_init();
 }
 
 VulkanRenderer::~VulkanRenderer()
@@ -59,6 +62,34 @@ VulkanRenderer::~VulkanRenderer()
 auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 {
 	recreate_swapchain(width, height);
+}
+
+auto VulkanRenderer::immediate_submit(
+    std::function<void(VkCommandBuffer cmd)> &&function) -> void
+{
+	VK_CHECK(m_logger, vkResetFences(m_vkb.dev, 1, &m_vk.imm_fence));
+	VK_CHECK(m_logger, vkResetCommandBuffer(m_vk.imm_command_buffer, 0));
+
+	auto cmd { m_vk.imm_command_buffer };
+	VkCommandBufferBeginInfo cmd_begin_info {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.pNext = nullptr,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		.pInheritanceInfo = nullptr,
+	};
+	VK_CHECK(m_logger, vkBeginCommandBuffer(cmd, &cmd_begin_info));
+
+	function(cmd);
+
+	VK_CHECK(m_logger, vkEndCommandBuffer(cmd));
+
+	auto cmd_info { vkinit::command_buffer_submit_info(cmd) };
+	auto submit { vkinit::submit_info2(&cmd_info, nullptr, nullptr) };
+	VK_CHECK(m_logger,
+	    vkQueueSubmit2(m_vk.graphics_queue, 1, &submit, m_vk.imm_fence));
+
+	VK_CHECK(m_logger,
+	    vkWaitForFences(m_vkb.dev, 1, &m_vk.imm_fence, true, 9999999999));
 }
 
 auto VulkanRenderer::vk_init() -> void
@@ -113,6 +144,11 @@ auto VulkanRenderer::vk_init() -> void
 	}
 
 	vkb::PhysicalDeviceSelector phys_device_selector { m_vkb.instance };
+	VkPhysicalDeviceVulkan13Features features_13 {};
+	features_13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+	features_13.pNext = nullptr;
+	features_13.synchronization2 = VK_TRUE;
+	features_13.dynamicRendering = VK_TRUE;
 	phys_device_selector.set_surface(m_vk.surface)
 	    .add_desired_extensions({
 	        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
@@ -126,7 +162,8 @@ auto VulkanRenderer::vk_init() -> void
 	        VK_KHR_MAINTENANCE1_EXTENSION_NAME,
 	        VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
 	        VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME,
-	    });
+	    })
+	    .set_required_features_13(features_13);
 	auto physical_device_selector_return { phys_device_selector.select() };
 	if (!physical_device_selector_return) {
 		std::println(std::cerr,
@@ -208,6 +245,23 @@ auto VulkanRenderer::commands_init() -> void
 		    vkAllocateCommandBuffers(
 		        m_vkb.dev, &ai, &frame_data.main_command_buffer));
 	}
+
+	VK_CHECK(m_logger,
+	    vkCreateCommandPool(m_vkb.dev, &ci, nullptr, &m_vk.imm_command_pool));
+
+	VkCommandBufferAllocateInfo ai {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.pNext = nullptr,
+		.commandPool = m_vk.imm_command_pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1,
+	};
+	VK_CHECK(m_logger,
+	    vkAllocateCommandBuffers(m_vkb.dev, &ai, &m_vk.imm_command_buffer));
+
+	m_vk.deletion_queue.emplace([this]() {
+		vkDestroyCommandPool(m_vkb.dev, m_vk.imm_command_pool, nullptr);
+	});
 }
 
 auto VulkanRenderer::sync_init() -> void
@@ -231,6 +285,11 @@ auto VulkanRenderer::sync_init() -> void
 		    vkCreateSemaphore(m_vkb.dev, &semaphore_ci, nullptr,
 		        &frame_data.swapchain_semaphore));
 	}
+
+	VK_CHECK(m_logger,
+	    vkCreateFence(m_vkb.dev, &fence_ci, nullptr, &m_vk.imm_fence));
+	m_vk.deletion_queue.emplace(
+	    [this]() { vkDestroyFence(m_vkb.dev, m_vk.imm_fence, nullptr); });
 }
 
 auto VulkanRenderer::descriptors_init() -> void
@@ -306,6 +365,65 @@ auto VulkanRenderer::background_pipelines_init() -> void
 	});
 }
 
+auto VulkanRenderer::imgui_init() -> void
+{
+	VkDescriptorPoolSize pool_sizes[] = {
+		{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 },
+	};
+
+	VkDescriptorPoolCreateInfo pool_info = {};
+	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	pool_info.maxSets = 1000;
+	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
+	pool_info.pPoolSizes = pool_sizes;
+
+	VkDescriptorPool imgui_pool;
+	VK_CHECK(m_logger,
+	    vkCreateDescriptorPool(m_vkb.dev, &pool_info, nullptr, &imgui_pool));
+
+	ImGui::CreateContext();
+
+	ImGui_ImplSDL3_InitForVulkan(m_window);
+
+	ImGui_ImplVulkan_InitInfo init_info = {};
+	init_info.Instance = m_vkb.instance;
+	init_info.PhysicalDevice = m_vkb.phys_dev;
+	init_info.Device = m_vkb.dev;
+	init_info.Queue = m_vk.graphics_queue;
+	init_info.DescriptorPool = imgui_pool;
+	init_info.MinImageCount = 3;
+	init_info.ImageCount = 3;
+	init_info.UseDynamicRendering = true;
+
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType
+	    = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount
+	    = 1;
+	init_info.PipelineInfoMain.PipelineRenderingCreateInfo
+	    .pColorAttachmentFormats
+	    = &m_vk.swapchain_image_format;
+
+	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+	ImGui_ImplVulkan_Init(&init_info);
+
+	m_vk.deletion_queue.emplace([&]() {
+		ImGui_ImplVulkan_Shutdown();
+		vkDestroyDescriptorPool(m_vkb.dev, imgui_pool, nullptr);
+	});
+}
+
 auto VulkanRenderer::render() -> void
 {
 	defer(m_vk.frame_number++);
@@ -365,28 +483,31 @@ auto VulkanRenderer::render() -> void
 	    m_vk.swapchain_extent);
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images[swapchain_image_idx],
-	    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+	    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+	draw_imgui(cmd, m_vk.swapchain_image_views.at(swapchain_image_idx));
+
+	vkutil::transition_image(cmd, m_vk.swapchain_images[swapchain_image_idx],
+	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 	VK_CHECK(m_logger, vkEndCommandBuffer(cmd));
 
 	VkSemaphore render_semaphore
 	    = m_vk.present_semaphores.at(swapchain_image_idx);
-	VkPipelineStageFlags wait_stage
-	    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	VkSubmitInfo submit_info {
-		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-		.pNext = nullptr,
-		.waitSemaphoreCount = 1,
-		.pWaitSemaphores = &m_vk.get_current_frame().swapchain_semaphore,
-		.pWaitDstStageMask = &wait_stage,
-		.commandBufferCount = 1,
-		.pCommandBuffers = &cmd,
-		.signalSemaphoreCount = 1,
-		.pSignalSemaphores = &render_semaphore,
-	};
+	VkPipelineStageFlags2 wait_stage
+	    = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	auto wait_info { vkinit::semaphore_submit_info(
+		wait_stage, m_vk.get_current_frame().swapchain_semaphore) };
+	auto command_buffer_info { vkinit::command_buffer_submit_info(cmd) };
+	auto signal_info { vkinit::semaphore_submit_info(
+		VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, render_semaphore) };
+	auto submit_info { vkinit::submit_info2(
+		&command_buffer_info, &wait_info, &signal_info) };
 
 	VK_CHECK(m_logger,
-	    vkQueueSubmit(m_vk.graphics_queue, 1, &submit_info,
+	    vkQueueSubmit2(m_vk.graphics_queue, 1, &submit_info,
 	        m_vk.get_current_frame().render_fence));
 
 	VkPresentInfoKHR present_info = {};
@@ -423,6 +544,27 @@ auto VulkanRenderer::draw_background(VkCommandBuffer cmd) -> void
 	vkCmdDispatch(cmd,
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.width / 16.0)),
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.height / 16.0)), 1);
+}
+
+auto VulkanRenderer::draw_imgui(
+    VkCommandBuffer cmd, VkImageView target_image_view) -> void
+{
+	auto const color_attachment { vkinit::attachment_info(
+		target_image_view, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
+	VkRenderingInfo render_info {};
+	render_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+	render_info.pNext = nullptr;
+	render_info.flags = 0;
+	render_info.renderArea = { {}, m_vk.draw_extent };
+	render_info.layerCount = 1;
+	render_info.colorAttachmentCount = 1;
+	render_info.pColorAttachments = &color_attachment;
+
+	vkCmdBeginRendering(cmd, &render_info);
+
+	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
+	vkCmdEndRendering(cmd);
 }
 
 auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void

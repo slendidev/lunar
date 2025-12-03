@@ -14,6 +14,14 @@ vulkan_dep = dependency('vulkan')
 openxr_dep = dependency('openxr')
 zlib_dep = dependency('zlib')
 sdl3_dep = dependency('sdl3')
+imgui_src = files(
+	'thirdparty/imgui/imgui.cpp',
+	'thirdparty/imgui/imgui_draw.cpp',
+	'thirdparty/imgui/imgui_tables.cpp',
+	'thirdparty/imgui/imgui_widgets.cpp',
+	'thirdparty/imgui/backends/imgui_impl_vulkan.cpp',
+	'thirdparty/imgui/backends/imgui_impl_sdl3.cpp',
+)
 
 vkbootstrap_dev = get_option('vkbootstrap_dev')
 vkbootstrap_lib = get_option('vkbootstrap_lib')
@@ -38,11 +46,36 @@ add_project_arguments(
 		'-Wno-padded',
 		'-Wno-unsafe-buffer-usage',
 		'-Wno-c23-extensions',
+		'-Wno-old-style-cast',
 	],
 	language : 'cpp'
 )
 
 subdir('shaders')
+
+imgui_src = files(
+	'thirdparty/imgui/imgui.cpp',
+	'thirdparty/imgui/imgui_draw.cpp',
+	'thirdparty/imgui/imgui_tables.cpp',
+	'thirdparty/imgui/imgui_widgets.cpp',
+	'thirdparty/imgui/imgui_demo.cpp',
+	'thirdparty/imgui/backends/imgui_impl_vulkan.cpp',
+	'thirdparty/imgui/backends/imgui_impl_sdl3.cpp',
+)
+
+imgui_inc = include_directories('thirdparty/imgui', 'thirdparty/imgui/backends')
+
+imgui_lib = static_library('imgui',
+	imgui_src,
+	include_directories: imgui_inc,
+	dependencies: [
+		vulkan_dep,
+		sdl3_dep,
+	],
+	cpp_args: [
+		'-w',
+	],
+)
 
 exe = executable('vr-compositor',
 	[
@@ -55,7 +88,8 @@ exe = executable('vr-compositor',
 		'src/VulkanRenderer.cpp',
 		'src/Application.cpp',
 	],
-	include_directories: vkbootstrap_inc,
+	include_directories: [ vkbootstrap_inc, imgui_inc ],
+	link_with: imgui_lib,
 	dependencies: [
 		wayland_dep,
 		vulkan_dep,

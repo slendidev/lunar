@@ -53,5 +53,15 @@ auto image_create_info(VkFormat format, VkImageUsageFlags usage_flags,
     VkExtent3D extent) -> VkImageCreateInfo;
 auto imageview_create_info(VkFormat format, VkImage image,
     VkImageAspectFlags aspect_flags) -> VkImageViewCreateInfo;
+auto command_buffer_submit_info(VkCommandBuffer cmd)
+    -> VkCommandBufferSubmitInfo;
+auto semaphore_submit_info(VkPipelineStageFlags2 stage_mask,
+    VkSemaphore semaphore) -> VkSemaphoreSubmitInfo;
+auto submit_info2(VkCommandBufferSubmitInfo *cmd_info,
+    VkSemaphoreSubmitInfo *wait_semaphore_info,
+    VkSemaphoreSubmitInfo *signal_semaphore_info) -> VkSubmitInfo2;
+auto attachment_info(VkImageView view, VkClearValue *clear,
+    VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+    -> VkRenderingAttachmentInfo;
 
 } // namespace vkinit

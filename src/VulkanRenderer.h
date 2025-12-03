@@ -34,6 +34,9 @@ public:
 	auto render() -> void;
 	auto resize(uint32_t width, uint32_t height) -> void;
 
+	auto immediate_submit(std::function<void(VkCommandBuffer cmd)> &&function)
+	    -> void;
+
 private:
 	auto vk_init() -> void;
 	auto swapchain_init() -> void;
@@ -42,8 +45,10 @@ private:
 	auto descriptors_init() -> void;
 	auto pipelines_init() -> void;
 	auto background_pipelines_init() -> void;
+	auto imgui_init() -> void;
 
 	auto draw_background(VkCommandBuffer cmd) -> void;
+	auto draw_imgui(VkCommandBuffer cmd, VkImageView target_image_view) -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
 	auto create_draw_image(uint32_t width, uint32_t height) -> void;
@@ -60,6 +65,11 @@ private:
 	} m_vkb;
 
 	struct {
+		auto get_current_frame() -> FrameData &
+		{
+			return frames.at(frame_number % frames.size());
+		}
+
 		VkSwapchainKHR swapchain { VK_NULL_HANDLE };
 		VkSurfaceKHR surface { nullptr };
 		VkFormat swapchain_image_format;
@@ -73,11 +83,6 @@ private:
 		VkExtent2D swapchain_extent;
 
 		std::array<FrameData, FRAME_OVERLAP> frames;
-		auto get_current_frame() -> FrameData &
-		{
-			return frames.at(frame_number % frames.size());
-		}
-
 		AllocatedImage draw_image {};
 		VkExtent2D draw_extent {};
 
@@ -91,6 +96,10 @@ private:
 		VkPipelineLayout gradient_pipeline_layout {};
 
 		DeletionQueue deletion_queue;
+
+		VkFence imm_fence {};
+		VkCommandBuffer imm_command_buffer {};
+		VkCommandPool imm_command_pool {};
 
 		uint64_t frame_number { 0 };
 	} m_vk;

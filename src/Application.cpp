@@ -8,6 +8,9 @@
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_video.h>
 
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_vulkan.h>
+
 #include "VulkanRenderer.h"
 
 namespace Lunar {
@@ -35,6 +38,8 @@ Application::~Application()
 {
 	m_renderer.reset();
 
+	ImGui::DestroyContext(m_imgui_context);
+
 	SDL_DestroyWindow(m_window);
 	SDL_Quit();
 
@@ -55,7 +60,16 @@ auto Application::run() -> void
 				m_renderer->resize(static_cast<uint32_t>(width),
 				    static_cast<uint32_t>(height));
 			}
+
+			ImGui_ImplSDL3_ProcessEvent(&e);
 		}
+
+		ImGui_ImplSDL3_NewFrame();
+		ImGui_ImplVulkan_NewFrame();
+
+		ImGui::NewFrame();
+		ImGui::ShowDemoWindow();
+		ImGui::Render();
 
 		m_renderer->render();
 	}

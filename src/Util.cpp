@@ -149,4 +149,64 @@ auto imageview_create_info(VkFormat format, VkImage image,
 	return info;
 }
 
+auto command_buffer_submit_info(VkCommandBuffer cmd)
+    -> VkCommandBufferSubmitInfo
+{
+	VkCommandBufferSubmitInfo info {};
+	info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+	info.pNext = nullptr;
+	info.commandBuffer = cmd;
+	info.deviceMask = 0;
+	return info;
+}
+
+auto semaphore_submit_info(VkPipelineStageFlags2 stage_mask,
+    VkSemaphore semaphore) -> VkSemaphoreSubmitInfo
+{
+	VkSemaphoreSubmitInfo info {};
+	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	info.pNext = nullptr;
+	info.semaphore = semaphore;
+	info.value = 0;
+	info.stageMask = stage_mask;
+	info.deviceIndex = 0;
+	return info;
+}
+
+auto submit_info2(VkCommandBufferSubmitInfo *cmd_info,
+    VkSemaphoreSubmitInfo *wait_semaphore_info,
+    VkSemaphoreSubmitInfo *signal_semaphore_info) -> VkSubmitInfo2
+{
+	VkSubmitInfo2 info {};
+	info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+	info.pNext = nullptr;
+	info.flags = 0;
+	info.waitSemaphoreInfoCount = wait_semaphore_info ? 1u : 0u;
+	info.pWaitSemaphoreInfos = wait_semaphore_info;
+	info.commandBufferInfoCount = cmd_info ? 1u : 0u;
+	info.pCommandBufferInfos = cmd_info;
+	info.signalSemaphoreInfoCount = signal_semaphore_info ? 1u : 0u;
+	info.pSignalSemaphoreInfos = signal_semaphore_info;
+	return info;
+}
+
+auto attachment_info(VkImageView view, VkClearValue *clear,
+    VkImageLayout layout) -> VkRenderingAttachmentInfo
+{
+	VkRenderingAttachmentInfo color_at {};
+	color_at.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+	color_at.pNext = nullptr;
+
+	color_at.imageView = view;
+	color_at.imageLayout = layout;
+	color_at.loadOp
+	    = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+	color_at.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	if (clear) {
+		color_at.clearValue = *clear;
+	}
+
+	return color_at;
+}
+
 } // namespace vkinit
