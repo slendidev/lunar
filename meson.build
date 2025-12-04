@@ -47,6 +47,8 @@ add_project_arguments(
 		'-Wno-unsafe-buffer-usage',
 		'-Wno-c23-extensions',
 		'-Wno-old-style-cast',
+		'-Wno-implicit-int-float-conversion',
+		'-Wno-implicit-float-conversion',
 	],
 	language : 'cpp'
 )
@@ -89,7 +91,11 @@ exe = executable('vr-compositor',
 		'src/VulkanRenderer.cpp',
 		'src/Application.cpp',
 	],
-	include_directories: [ vkbootstrap_inc, imgui_inc ],
+	include_directories: [
+		vkbootstrap_inc,
+		imgui_inc,
+		'thirdparty/smath/include'
+	],
 	link_with: imgui_lib,
 	dependencies: [
 		wayland_dep,

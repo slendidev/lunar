@@ -5,15 +5,29 @@
 
 #include <SDL3/SDL_video.h>
 #include <VkBootstrap.h>
+#include <smath.hpp>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_core.h>
 
-#include "AllocatedImage.h"
 #include "DeletionQueue.h"
+#include "DescriptorAllocator.h"
 #include "Logger.h"
-#include "src/DescriptorAllocator.h"
 
 namespace Lunar {
+
+struct AllocatedImage {
+	VkImage image;
+	VkImageView image_view;
+	VmaAllocation allocation;
+	VkExtent3D extent;
+	VkFormat format;
+};
+
+struct AllocatedBuffer {
+	VkBuffer buffer;
+	VmaAllocation allocation;
+	VmaAllocationInfo info;
+};
 
 struct FrameData {
 	VkCommandPool command_pool;
@@ -22,6 +36,24 @@ struct FrameData {
 	VkFence render_fence;
 
 	DeletionQueue deletion_queue;
+};
+
+struct Vertex {
+	smath::Vec3 position;
+	float uv_x;
+	smath::Vec3 normal;
+	float uv_y;
+	smath::Vec4 color;
+};
+
+struct GPUMeshBuffers {
+	AllocatedBuffer index_buffer, vertex_buffer;
+	VkDeviceAddress vertex_buffer_address;
+};
+
+struct GPUDrawPushConstants {
+	smath::Mat4 world_matrix;
+	VkDeviceAddress vertex_buffer;
 };
 
 constexpr unsigned FRAME_OVERLAP = 2;
@@ -46,7 +78,9 @@ private:
 	auto pipelines_init() -> void;
 	auto background_pipelines_init() -> void;
 	auto triangle_pipeline_init() -> void;
+	auto mesh_pipeline_init() -> void;
 	auto imgui_init() -> void;
+	auto default_data_init() -> void;
 
 	auto draw_background(VkCommandBuffer cmd) -> void;
 	auto draw_geometry(VkCommandBuffer cmd) -> void;
@@ -58,6 +92,12 @@ private:
 	auto destroy_draw_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
+
+	auto create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
+	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
+	auto destroy_buffer(AllocatedBuffer &buffer) -> void;
+	auto upload_mesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
+	    -> GPUMeshBuffers;
 
 	struct {
 		vkb::Instance instance;
@@ -99,6 +139,11 @@ private:
 
 		VkPipeline triangle_pipeline {};
 		VkPipelineLayout triangle_pipeline_layout {};
+
+		VkPipeline mesh_pipeline {};
+		VkPipelineLayout mesh_pipeline_layout {};
+
+		GPUMeshBuffers rectangle;
 
 		VkDescriptorPool imgui_descriptor_pool { VK_NULL_HANDLE };
 

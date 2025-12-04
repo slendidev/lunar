@@ -1,3 +1,6 @@
 [submodule "thirdparty/imgui"]
 	path = thirdparty/imgui
 	url = https://github.com/ocornut/imgui.git
+[submodule "thirdparty/smath"]
+	path = thirdparty/smath
+	url = https://github.com/slendidev/smath.git

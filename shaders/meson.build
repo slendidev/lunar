@@ -17,6 +17,8 @@ shader_sources = files(
 	'gradient.comp',
 	'triangle.frag',
 	'triangle.vert',
+	'triangle_mesh.frag',
+	'triangle_mesh.vert',
 )
 
 spirv_shaders = []
