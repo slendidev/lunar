@@ -398,7 +398,8 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 	    vkCreatePipelineLayout(
 	        m_vkb.dev, &layout_ci, nullptr, &m_vk.triangle_pipeline_layout));
 
-	auto pip { GraphicsPipelineBuilder { m_logger }
+	auto pip {
+		GraphicsPipelineBuilder { m_logger }
 		    .set_pipeline_layout(m_vk.triangle_pipeline_layout)
 		    .set_shaders(triangle_vert_shader, triangle_frag_shader)
 		    .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
@@ -408,7 +409,8 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 		    .disable_depth_testing()
 		    .set_color_attachment_format(m_vk.draw_image.format)
 		    .set_depth_format(VK_FORMAT_UNDEFINED)
-		    .build(m_vkb.dev) };
+		    .build(m_vkb.dev),
+	};
 	m_vk.triangle_pipeline = pip;
 
 	vkDestroyShaderModule(m_vkb.dev, triangle_vert_shader, nullptr);
