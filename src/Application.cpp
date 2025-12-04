@@ -6,11 +6,13 @@
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
 
+#include "Util.h"
 #include "VulkanRenderer.h"
 
 namespace Lunar {
@@ -48,7 +50,19 @@ auto Application::run() -> void
 {
 	SDL_Event e;
 
+	ImGuiIO &io = ImGui::GetIO();
+	io.IniFilename = nullptr;
+
+	uint64_t last { 0 };
+	float fps { 0.0f };
 	while (m_running) {
+		uint64_t now { SDL_GetTicks() };
+		uint64_t dt { now - last };
+		last = now;
+
+		if (dt > 0)
+			fps = 1000.0f / (float)dt;
+
 		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_EVENT_QUIT) {
 				m_running = false;
@@ -66,7 +80,20 @@ auto Application::run() -> void
 		ImGui_ImplVulkan_NewFrame();
 
 		ImGui::NewFrame();
+
 		ImGui::ShowDemoWindow();
+
+		ImGui::SetNextWindowSize({ 100, 50 });
+		ImGui::SetNextWindowPos({ 0, 0 });
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
+		if (ImGui::Begin("Debug Info", nullptr,
+		        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+			defer(ImGui::End());
+
+			ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
+		}
+		ImGui::PopStyleColor();
+
 		ImGui::Render();
 
 		m_renderer->render();
