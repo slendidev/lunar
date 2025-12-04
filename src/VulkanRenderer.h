@@ -45,9 +45,11 @@ private:
 	auto descriptors_init() -> void;
 	auto pipelines_init() -> void;
 	auto background_pipelines_init() -> void;
+	auto triangle_pipeline_init() -> void;
 	auto imgui_init() -> void;
 
 	auto draw_background(VkCommandBuffer cmd) -> void;
+	auto draw_geometry(VkCommandBuffer cmd) -> void;
 	auto draw_imgui(VkCommandBuffer cmd, VkImageView target_image_view) -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
@@ -94,6 +96,9 @@ private:
 
 		VkPipeline gradient_pipeline {};
 		VkPipelineLayout gradient_pipeline_layout {};
+
+		VkPipeline triangle_pipeline {};
+		VkPipelineLayout triangle_pipeline_layout {};
 
 		VkDescriptorPool imgui_descriptor_pool { VK_NULL_HANDLE };
 

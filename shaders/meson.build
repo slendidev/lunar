@@ -15,11 +15,13 @@ endif
 
 shader_sources = files(
 	'gradient.comp',
+	'triangle.frag',
+	'triangle.vert',
 )
 
 spirv_shaders = []
 foreach shader : shader_sources
-	shader_name = fs.stem(shader)
+	shader_name = fs.stem(shader.full_path().replace('.', '_'))
 	spirv_shaders += custom_target(
 		shader_name + '_spv',
 		input : shader,

@@ -63,5 +63,9 @@ auto submit_info2(VkCommandBufferSubmitInfo *cmd_info,
 auto attachment_info(VkImageView view, VkClearValue *clear,
     VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
     -> VkRenderingAttachmentInfo;
+auto pipeline_shader_stage(VkShaderStageFlagBits stage, VkShaderModule module)
+    -> VkPipelineShaderStageCreateInfo;
+auto render_info(VkExtent2D extent, VkRenderingAttachmentInfo const *color_att,
+    VkRenderingAttachmentInfo const *depth_att) -> VkRenderingInfo;
 
 } // namespace vkinit

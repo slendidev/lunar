@@ -209,4 +209,32 @@ auto attachment_info(VkImageView view, VkClearValue *clear,
 	return color_at;
 }
 
+auto pipeline_shader_stage(VkShaderStageFlagBits stage, VkShaderModule module)
+    -> VkPipelineShaderStageCreateInfo
+{
+	VkPipelineShaderStageCreateInfo stage_ci {};
+	stage_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stage_ci.pNext = nullptr;
+	stage_ci.stage = stage;
+	stage_ci.module = module;
+	stage_ci.pName = "main";
+	return stage_ci;
+}
+
+auto render_info(VkExtent2D extent, VkRenderingAttachmentInfo const *color_att,
+    VkRenderingAttachmentInfo const *depth_att) -> VkRenderingInfo
+{
+
+	VkRenderingInfo render_info {};
+	render_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+	render_info.pNext = nullptr;
+	render_info.flags = 0;
+	render_info.renderArea = { {}, extent };
+	render_info.layerCount = 1;
+	render_info.colorAttachmentCount = color_att ? 1 : 0;
+	render_info.pColorAttachments = color_att;
+	render_info.pDepthAttachment = depth_att;
+	return render_info;
+}
+
 } // namespace vkinit

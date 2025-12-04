@@ -14,6 +14,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "DescriptorLayoutBuilder.h"
+#include "GraphicsPipelineBuilder.h"
 #include "Util.h"
 
 namespace Lunar {
@@ -316,7 +317,11 @@ auto VulkanRenderer::descriptors_init() -> void
 	});
 }
 
-auto VulkanRenderer::pipelines_init() -> void { background_pipelines_init(); }
+auto VulkanRenderer::pipelines_init() -> void
+{
+	background_pipelines_init();
+	triangle_pipeline_init();
+}
 
 auto VulkanRenderer::background_pipelines_init() -> void
 {
@@ -331,7 +336,7 @@ auto VulkanRenderer::background_pipelines_init() -> void
 	        m_vkb.dev, &layout_ci, nullptr, &m_vk.gradient_pipeline_layout));
 
 	uint8_t compute_draw_shader_data[] {
-#embed "gradient.spv"
+#embed "gradient_comp.spv"
 	};
 	VkShaderModule compute_draw_shader {};
 	if (!vkutil::load_shader_module(std::span<uint8_t>(compute_draw_shader_data,
@@ -340,12 +345,8 @@ auto VulkanRenderer::background_pipelines_init() -> void
 		m_logger.err("Failed to load gradient compute shader");
 	}
 
-	VkPipelineShaderStageCreateInfo stage_ci {};
-	stage_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stage_ci.pNext = nullptr;
-	stage_ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-	stage_ci.module = compute_draw_shader;
-	stage_ci.pName = "main";
+	auto stage_ci { vkinit::pipeline_shader_stage(
+		VK_SHADER_STAGE_COMPUTE_BIT, compute_draw_shader) };
 
 	VkComputePipelineCreateInfo compute_pip_ci {};
 	compute_pip_ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -362,6 +363,61 @@ auto VulkanRenderer::background_pipelines_init() -> void
 		vkDestroyPipelineLayout(
 		    m_vkb.dev, m_vk.gradient_pipeline_layout, nullptr);
 		vkDestroyPipeline(m_vkb.dev, m_vk.gradient_pipeline, nullptr);
+	});
+}
+
+auto VulkanRenderer::triangle_pipeline_init() -> void
+{
+	uint8_t triangle_vert_shader_data[] {
+#embed "triangle_vert.spv"
+	};
+	VkShaderModule triangle_vert_shader {};
+	if (!vkutil::load_shader_module(
+	        std::span<uint8_t>(
+	            triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
+	        m_vkb.dev, &triangle_vert_shader)) {
+		m_logger.err("Failed to load triangle vert shader");
+	}
+
+	uint8_t triangle_frag_shader_data[] {
+#embed "triangle_frag.spv"
+	};
+	VkShaderModule triangle_frag_shader {};
+	if (!vkutil::load_shader_module(
+	        std::span<uint8_t>(
+	            triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
+	        m_vkb.dev, &triangle_frag_shader)) {
+		m_logger.err("Failed to load triangle frag shader");
+	}
+
+	VkPipelineLayoutCreateInfo layout_ci {};
+	layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layout_ci.pNext = nullptr;
+
+	VK_CHECK(m_logger,
+	    vkCreatePipelineLayout(
+	        m_vkb.dev, &layout_ci, nullptr, &m_vk.triangle_pipeline_layout));
+
+	auto pip { GraphicsPipelineBuilder { m_logger }
+		    .set_pipeline_layout(m_vk.triangle_pipeline_layout)
+		    .set_shaders(triangle_vert_shader, triangle_frag_shader)
+		    .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		    .set_polygon_mode(VK_POLYGON_MODE_FILL)
+		    .set_multisampling_none()
+		    .disable_blending()
+		    .disable_depth_testing()
+		    .set_color_attachment_format(m_vk.draw_image.format)
+		    .set_depth_format(VK_FORMAT_UNDEFINED)
+		    .build(m_vkb.dev) };
+	m_vk.triangle_pipeline = pip;
+
+	vkDestroyShaderModule(m_vkb.dev, triangle_vert_shader, nullptr);
+	vkDestroyShaderModule(m_vkb.dev, triangle_frag_shader, nullptr);
+
+	m_vk.deletion_queue.emplace([&]() {
+		vkDestroyPipelineLayout(
+		    m_vkb.dev, m_vk.triangle_pipeline_layout, nullptr);
+		vkDestroyPipeline(m_vkb.dev, m_vk.triangle_pipeline, nullptr);
 	});
 }
 
@@ -388,9 +444,9 @@ auto VulkanRenderer::imgui_init() -> void
 	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
 	pool_info.pPoolSizes = pool_sizes;
 
-	VK_CHECK(m_logger, vkCreateDescriptorPool(
-	                       m_vkb.dev, &pool_info, nullptr,
-	                       &m_vk.imgui_descriptor_pool));
+	VK_CHECK(m_logger,
+	    vkCreateDescriptorPool(
+	        m_vkb.dev, &pool_info, nullptr, &m_vk.imgui_descriptor_pool));
 
 	ImGui::CreateContext();
 
@@ -479,7 +535,13 @@ auto VulkanRenderer::render() -> void
 	draw_background(cmd);
 
 	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+	draw_geometry(cmd);
+
+	vkutil::transition_image(cmd, m_vk.draw_image.image,
+	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images.at(swapchain_image_idx),
 	    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -552,19 +614,45 @@ auto VulkanRenderer::draw_background(VkCommandBuffer cmd) -> void
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.height / 16.0)), 1);
 }
 
+auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
+{
+	auto color_att { vkinit::attachment_info(m_vk.draw_image.image_view,
+		nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
+	auto const render_info { vkinit::render_info(
+		m_vk.draw_extent, &color_att, nullptr) };
+
+	vkCmdBeginRendering(cmd, &render_info);
+
+	vkCmdBindPipeline(
+	    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.triangle_pipeline);
+
+	VkViewport viewport {};
+	viewport.x = 0;
+	viewport.y = 0;
+	viewport.width = static_cast<float>(m_vk.draw_extent.width);
+	viewport.height = static_cast<float>(m_vk.draw_extent.height);
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+	vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+	VkRect2D scissor {};
+	scissor.offset.x = 0;
+	scissor.offset.y = 0;
+	scissor.extent = m_vk.draw_extent;
+	vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+	vkCmdDraw(cmd, 3, 1, 0, 0);
+
+	vkCmdEndRendering(cmd);
+}
+
 auto VulkanRenderer::draw_imgui(
     VkCommandBuffer cmd, VkImageView target_image_view) -> void
 {
 	auto const color_attachment { vkinit::attachment_info(
 		target_image_view, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
-	VkRenderingInfo render_info {};
-	render_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-	render_info.pNext = nullptr;
-	render_info.flags = 0;
-	render_info.renderArea = { {}, m_vk.draw_extent };
-	render_info.layerCount = 1;
-	render_info.colorAttachmentCount = 1;
-	render_info.pColorAttachments = &color_attachment;
+	auto const render_info { vkinit::render_info(
+		m_vk.draw_extent, &color_attachment, nullptr) };
 
 	vkCmdBeginRendering(cmd, &render_info);
 
