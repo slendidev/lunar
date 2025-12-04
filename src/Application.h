@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 namespace Lunar {
+
 class VulkanRenderer;
 
 struct Application {
