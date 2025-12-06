@@ -33,6 +33,8 @@ Application::Application()
 
 	m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
 
+	mouse_captured(true);
+
 	m_logger.info("App init done!");
 }
 
@@ -71,6 +73,11 @@ auto Application::run() -> void
 				SDL_GetWindowSize(m_window, &width, &height);
 				m_renderer->resize(static_cast<uint32_t>(width),
 				    static_cast<uint32_t>(height));
+			} else if (e.type == SDL_EVENT_KEY_DOWN && e.key.repeat == false) {
+				if (e.key.key == SDLK_F11 && e.key.mod & SDL_KMOD_LCTRL) {
+					mouse_captured(!mouse_captured());
+					m_show_imgui = mouse_captured();
+				}
 			}
 
 			ImGui_ImplSDL3_ProcessEvent(&e);
@@ -81,23 +88,32 @@ auto Application::run() -> void
 
 		ImGui::NewFrame();
 
-		ImGui::ShowDemoWindow();
+		if (m_show_imgui) {
+			ImGui::ShowDemoWindow();
 
-		ImGui::SetNextWindowSize({ 100, 50 });
-		ImGui::SetNextWindowPos({ 0, 0 });
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
-		if (ImGui::Begin("Debug Info", nullptr,
-		        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
-			defer(ImGui::End());
+			ImGui::SetNextWindowSize({ 100, 50 });
+			ImGui::SetNextWindowPos({ 0, 0 });
+			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
+			if (ImGui::Begin("Debug Info", nullptr,
+			        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+				defer(ImGui::End());
 
-			ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
+				ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
+			}
+			ImGui::PopStyleColor();
 		}
-		ImGui::PopStyleColor();
 
 		ImGui::Render();
 
 		m_renderer->render();
 	}
+}
+
+auto Application::mouse_captured(bool new_state) -> void
+{
+	SDL_CaptureMouse(new_state);
+
+	m_mouse_captured = new_state;
 }
 
 } // namespace Lunar

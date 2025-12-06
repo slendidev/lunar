@@ -4,3 +4,6 @@
 [submodule "thirdparty/smath"]
 	path = thirdparty/smath
 	url = https://github.com/slendidev/smath.git
+[submodule "subprojects/fastgltf"]
+	path = subprojects/fastgltf
+	url = https://github.com/spnda/fastgltf.git

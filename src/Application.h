@@ -17,6 +17,9 @@ struct Application {
 	~Application();
 
 	auto run() -> void;
+	auto mouse_captured(bool new_state) -> void;
+	auto mouse_captured() const -> bool { return m_mouse_captured; }
+	auto toggle_mouse_captured() -> void { mouse_captured(!m_mouse_captured); }
 
 private:
 	SDL_Window *m_window { nullptr };
@@ -24,6 +27,8 @@ private:
 	std::unique_ptr<VulkanRenderer> m_renderer;
 
 	bool m_running { true };
+	bool m_mouse_captured { false };
+	bool m_show_imgui { false };
 };
 
 } // namespace Lunar
