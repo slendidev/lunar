@@ -417,7 +417,7 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 		    .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 		    .set_polygon_mode(VK_POLYGON_MODE_FILL)
 		    .set_multisampling_none()
-		    .disable_blending()
+		    .enable_blending_additive()
 		    .disable_depth_testing()
 		    .set_color_attachment_format(m_vk.draw_image.format)
 		    .set_depth_format(m_vk.depth_image.format)
@@ -781,8 +781,8 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 
 	GPUDrawPushConstants push_constants;
 	auto rect_model { smath::scale(
-	    smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
-	    smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
+		smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
+		smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
 	push_constants.world_matrix = view_projection * rect_model;
 	push_constants.vertex_buffer = m_vk.rectangle.vertex_buffer_address;
 

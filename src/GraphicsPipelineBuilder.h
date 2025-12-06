@@ -26,6 +26,8 @@ struct GraphicsPipelineBuilder {
 	    -> GraphicsPipelineBuilder &;
 	auto set_multisampling_none() -> GraphicsPipelineBuilder &;
 	auto disable_blending() -> GraphicsPipelineBuilder &;
+	auto enable_blending_additive() -> GraphicsPipelineBuilder &;
+	auto enable_blending_alpha_blend() -> GraphicsPipelineBuilder &;
 	auto set_color_attachment_format(VkFormat format)
 	    -> GraphicsPipelineBuilder &;
 	auto set_depth_format(VkFormat format) -> GraphicsPipelineBuilder &;
