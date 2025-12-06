@@ -17,6 +17,7 @@ struct Application {
 	~Application();
 
 	auto run() -> void;
+
 	auto mouse_captured(bool new_state) -> void;
 	auto mouse_captured() const -> bool { return m_mouse_captured; }
 	auto toggle_mouse_captured() -> void { mouse_captured(!m_mouse_captured); }

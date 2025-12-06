@@ -76,7 +76,7 @@ auto Application::run() -> void
 			} else if (e.type == SDL_EVENT_KEY_DOWN && e.key.repeat == false) {
 				if (e.key.key == SDLK_F11 && e.key.mod & SDL_KMOD_LCTRL) {
 					mouse_captured(!mouse_captured());
-					m_show_imgui = mouse_captured();
+					m_show_imgui = !mouse_captured();
 				}
 			}
 
@@ -111,7 +111,10 @@ auto Application::run() -> void
 
 auto Application::mouse_captured(bool new_state) -> void
 {
-	SDL_CaptureMouse(new_state);
+	if (!SDL_SetWindowRelativeMouseMode(m_window, new_state)) {
+		m_logger.err("Failed to capture mouse");
+		return;
+	}
 
 	m_mouse_captured = new_state;
 }
