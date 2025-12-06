@@ -775,12 +775,24 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	push_constants.vertex_buffer
 	    = m_vk.test_meshes[2]->mesh_buffers.vertex_buffer_address;
 
-	auto const view { smath::translate(smath::Vec3 { 0, 0, -0.1 }) };
-	auto projection { smath::matrix_perspective(smath::deg(70.0f),
-		static_cast<float>(m_vk.draw_extent.width)
-		    / static_cast<float>(m_vk.draw_extent.height),
-		10000.0f, 0.1f) };
-	push_constants.world_matrix = projection * view;
+	auto model { smath::Mat4::identity() };
+	// auto model { smath::translate(smath::Vec3 { 0.0f, 0.0f, -3.0f }) };
+
+	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
+		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
+		false) };
+
+	// auto projection { smath::Mat4::identity() };
+	// projection[1][1] *= -1;
+	auto projection {
+		smath::matrix_perspective(smath::deg(70.0f),
+		    static_cast<float>(m_vk.draw_extent.width)
+		        / static_cast<float>(m_vk.draw_extent.height),
+		    0.1f, 10000.0f),
+	};
+
+	push_constants.world_matrix = projection * view * model;
+	push_constants.world_matrix[1][1] *= -1;
 
 	vkCmdPushConstants(cmd, m_vk.mesh_pipeline_layout,
 	    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
