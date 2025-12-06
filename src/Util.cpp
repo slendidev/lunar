@@ -237,4 +237,20 @@ auto render_info(VkExtent2D extent, VkRenderingAttachmentInfo const *color_att,
 	return render_info;
 }
 
+auto depth_attachment_info(VkImageView view, VkImageLayout layout)
+    -> VkRenderingAttachmentInfo
+{
+	VkRenderingAttachmentInfo depth_att {};
+	depth_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+	depth_att.pNext = nullptr;
+
+	depth_att.imageView = view;
+	depth_att.imageLayout = layout;
+	depth_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	depth_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	depth_att.clearValue.depthStencil.depth = 1.f;
+
+	return depth_att;
+}
+
 } // namespace vkinit

@@ -142,6 +142,22 @@ auto GraphicsPipelineBuilder::disable_depth_testing()
 	return *this;
 }
 
+auto GraphicsPipelineBuilder::enable_depth_testing(
+    bool depth_write_enable, VkCompareOp op) -> GraphicsPipelineBuilder &
+{
+	m_depth_stencil.depthTestEnable = VK_TRUE;
+	m_depth_stencil.depthWriteEnable = depth_write_enable;
+	m_depth_stencil.depthCompareOp = op;
+	m_depth_stencil.depthBoundsTestEnable = VK_FALSE;
+	m_depth_stencil.stencilTestEnable = VK_FALSE;
+	m_depth_stencil.front = {};
+	m_depth_stencil.back = {};
+	m_depth_stencil.minDepthBounds = 0.0f;
+	m_depth_stencil.maxDepthBounds = 1.0f;
+
+	return *this;
+}
+
 auto GraphicsPipelineBuilder::build(VkDevice dev) -> VkPipeline
 {
 	VkPipelineViewportStateCreateInfo viewport_state_ci {};

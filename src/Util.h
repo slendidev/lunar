@@ -67,5 +67,8 @@ auto pipeline_shader_stage(VkShaderStageFlagBits stage, VkShaderModule module)
     -> VkPipelineShaderStageCreateInfo;
 auto render_info(VkExtent2D extent, VkRenderingAttachmentInfo const *color_att,
     VkRenderingAttachmentInfo const *depth_att) -> VkRenderingInfo;
+auto depth_attachment_info(VkImageView view,
+    VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)
+    -> VkRenderingAttachmentInfo;
 
 } // namespace vkinit

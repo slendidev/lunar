@@ -52,6 +52,7 @@ VulkanRenderer::~VulkanRenderer()
 
 	destroy_swapchain();
 	destroy_draw_image();
+	destroy_depth_image();
 
 	m_vk.deletion_queue.flush();
 
@@ -228,6 +229,7 @@ auto VulkanRenderer::swapchain_init() -> void
 	SDL_GetWindowSize(m_window, &w, &h);
 	create_swapchain(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 	create_draw_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+	create_depth_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 }
 
 auto VulkanRenderer::commands_init() -> void
@@ -418,7 +420,7 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 		    .disable_blending()
 		    .disable_depth_testing()
 		    .set_color_attachment_format(m_vk.draw_image.format)
-		    .set_depth_format(VK_FORMAT_UNDEFINED)
+		    .set_depth_format(m_vk.depth_image.format)
 		    .build(m_vkb.dev),
 	};
 	m_vk.triangle_pipeline = pip;
@@ -481,9 +483,9 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 		    .set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
 		    .set_multisampling_none()
 		    .disable_blending()
-		    .disable_depth_testing()
+		    .enable_depth_testing()
 		    .set_color_attachment_format(m_vk.draw_image.format)
-		    .set_depth_format(VK_FORMAT_UNDEFINED)
+		    .set_depth_format(m_vk.depth_image.format)
 		    .build(m_vkb.dev),
 	};
 	m_vk.mesh_pipeline = pip;
@@ -652,6 +654,8 @@ auto VulkanRenderer::render() -> void
 
 	vkutil::transition_image(cmd, m_vk.draw_image.image,
 	    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	vkutil::transition_image(cmd, m_vk.depth_image.image,
+	    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
 	draw_geometry(cmd);
 
@@ -734,10 +738,24 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 {
 	auto color_att { vkinit::attachment_info(m_vk.draw_image.image_view,
 		nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
+	auto depth_att { vkinit::depth_attachment_info(m_vk.depth_image.image_view,
+		VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) };
 	auto const render_info { vkinit::render_info(
-		m_vk.draw_extent, &color_att, nullptr) };
+		m_vk.draw_extent, &color_att, &depth_att) };
 
 	vkCmdBeginRendering(cmd, &render_info);
+
+	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
+		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
+		false) };
+	auto projection {
+		smath::matrix_perspective(smath::deg(70.0f),
+		    static_cast<float>(m_vk.draw_extent.width)
+		        / static_cast<float>(m_vk.draw_extent.height),
+		    0.1f, 10000.0f),
+	};
+	projection[1][1] *= -1;
+	auto view_projection { projection * view };
 
 	vkCmdBindPipeline(
 	    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.triangle_pipeline);
@@ -757,12 +775,15 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	scissor.extent = m_vk.draw_extent;
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-	vkCmdDraw(cmd, 3, 1, 0, 0);
+	// vkCmdDraw(cmd, 3, 1, 0, 0);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.mesh_pipeline);
 
 	GPUDrawPushConstants push_constants;
-	push_constants.world_matrix = smath::Mat4 { 1.0f };
+	auto rect_model { smath::scale(
+	    smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
+	    smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
+	push_constants.world_matrix = view_projection * rect_model;
 	push_constants.vertex_buffer = m_vk.rectangle.vertex_buffer_address;
 
 	vkCmdPushConstants(cmd, m_vk.mesh_pipeline_layout,
@@ -776,23 +797,7 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	    = m_vk.test_meshes[2]->mesh_buffers.vertex_buffer_address;
 
 	auto model { smath::Mat4::identity() };
-	// auto model { smath::translate(smath::Vec3 { 0.0f, 0.0f, -3.0f }) };
-
-	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
-		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
-		false) };
-
-	// auto projection { smath::Mat4::identity() };
-	// projection[1][1] *= -1;
-	auto projection {
-		smath::matrix_perspective(smath::deg(70.0f),
-		    static_cast<float>(m_vk.draw_extent.width)
-		        / static_cast<float>(m_vk.draw_extent.height),
-		    0.1f, 10000.0f),
-	};
-
-	push_constants.world_matrix = projection * view * model;
-	push_constants.world_matrix[1][1] *= -1;
+	push_constants.world_matrix = view_projection * model;
 
 	vkCmdPushConstants(cmd, m_vk.mesh_pipeline_layout,
 	    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
@@ -890,6 +895,49 @@ auto VulkanRenderer::create_draw_image(uint32_t width, uint32_t height) -> void
 	        m_vkb.dev, &rview_ci, nullptr, &m_vk.draw_image.image_view));
 }
 
+auto VulkanRenderer::create_depth_image(uint32_t width, uint32_t height) -> void
+{
+	destroy_depth_image();
+
+	m_vk.depth_image.format = VK_FORMAT_D32_SFLOAT;
+	m_vk.depth_image.extent = { width, height, 1 };
+
+	VkImageCreateInfo rimg_ci { vkinit::image_create_info(
+		m_vk.depth_image.format,
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+		    | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		m_vk.depth_image.extent) };
+	VmaAllocationCreateInfo rimg_alloci {};
+	rimg_alloci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	rimg_alloci.requiredFlags
+	    = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	vmaCreateImage(m_vk.allocator, &rimg_ci, &rimg_alloci,
+	    &m_vk.depth_image.image, &m_vk.depth_image.allocation, nullptr);
+
+	VkImageViewCreateInfo rview_ci
+	    = vkinit::imageview_create_info(m_vk.depth_image.format,
+	        m_vk.depth_image.image, VK_IMAGE_ASPECT_DEPTH_BIT);
+	VK_CHECK(m_logger,
+	    vkCreateImageView(
+	        m_vkb.dev, &rview_ci, nullptr, &m_vk.depth_image.image_view));
+}
+
+auto VulkanRenderer::destroy_depth_image() -> void
+{
+	if (m_vk.depth_image.image_view != VK_NULL_HANDLE) {
+		vkDestroyImageView(m_vkb.dev, m_vk.depth_image.image_view, nullptr);
+		m_vk.depth_image.image_view = VK_NULL_HANDLE;
+	}
+	if (m_vk.depth_image.image != VK_NULL_HANDLE) {
+		vmaDestroyImage(m_vk.allocator, m_vk.depth_image.image,
+		    m_vk.depth_image.allocation);
+		m_vk.depth_image.image = VK_NULL_HANDLE;
+		m_vk.depth_image.allocation = nullptr;
+	}
+	m_vk.depth_image.extent = { 0, 0, 0 };
+}
+
 auto VulkanRenderer::update_draw_image_descriptor() -> void
 {
 	VkDescriptorImageInfo img_info {};
@@ -930,15 +978,18 @@ auto VulkanRenderer::recreate_swapchain(uint32_t width, uint32_t height) -> void
 	if (width == 0 || height == 0) {
 		destroy_swapchain();
 		destroy_draw_image();
+		destroy_depth_image();
 		m_vk.swapchain_extent = { 0, 0 };
 		return;
 	}
 
 	destroy_swapchain();
 	destroy_draw_image();
+	destroy_depth_image();
 
 	create_swapchain(width, height);
 	create_draw_image(width, height);
+	create_depth_image(width, height);
 	update_draw_image_descriptor();
 }
 

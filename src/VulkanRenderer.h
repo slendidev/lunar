@@ -59,6 +59,8 @@ private:
 	auto create_draw_image(uint32_t width, uint32_t height) -> void;
 	auto update_draw_image_descriptor() -> void;
 	auto destroy_draw_image() -> void;
+	auto create_depth_image(uint32_t width, uint32_t height) -> void;
+	auto destroy_depth_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
 
@@ -93,6 +95,7 @@ private:
 
 		std::array<FrameData, FRAME_OVERLAP> frames;
 		AllocatedImage draw_image {};
+		AllocatedImage depth_image {};
 		VkExtent2D draw_extent {};
 
 		VmaAllocator allocator;

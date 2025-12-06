@@ -32,6 +32,9 @@ struct GraphicsPipelineBuilder {
 	auto set_pipeline_layout(VkPipelineLayout layout)
 	    -> GraphicsPipelineBuilder &;
 	auto disable_depth_testing() -> GraphicsPipelineBuilder &;
+	auto enable_depth_testing(bool depth_write_enable = true,
+	    VkCompareOp op = VK_COMPARE_OP_LESS_OR_EQUAL)
+	    -> GraphicsPipelineBuilder &;
 	auto build(VkDevice dev) -> VkPipeline;
 
 private:
