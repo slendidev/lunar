@@ -11,45 +11,11 @@
 
 #include "DeletionQueue.h"
 #include "DescriptorAllocator.h"
+#include "Loader.h"
 #include "Logger.h"
+#include "Types.h"
 
 namespace Lunar {
-
-struct AllocatedImage {
-	VkImage image;
-	VkImageView image_view;
-	VmaAllocation allocation;
-	VkExtent3D extent;
-	VkFormat format;
-};
-
-struct AllocatedBuffer {
-	VkBuffer buffer;
-	VmaAllocation allocation;
-	VmaAllocationInfo info;
-};
-
-struct FrameData {
-	VkCommandPool command_pool;
-	VkCommandBuffer main_command_buffer;
-	VkSemaphore swapchain_semaphore;
-	VkFence render_fence;
-
-	DeletionQueue deletion_queue;
-};
-
-struct Vertex {
-	smath::Vec3 position;
-	float uv_x;
-	smath::Vec3 normal;
-	float uv_y;
-	smath::Vec4 color;
-};
-
-struct GPUMeshBuffers {
-	AllocatedBuffer index_buffer, vertex_buffer;
-	VkDeviceAddress vertex_buffer_address;
-};
 
 struct GPUDrawPushConstants {
 	smath::Mat4 world_matrix;
@@ -58,8 +24,7 @@ struct GPUDrawPushConstants {
 
 constexpr unsigned FRAME_OVERLAP = 2;
 
-class VulkanRenderer {
-public:
+struct VulkanRenderer {
 	VulkanRenderer(SDL_Window *window, Logger &logger);
 	~VulkanRenderer();
 
@@ -68,6 +33,10 @@ public:
 
 	auto immediate_submit(std::function<void(VkCommandBuffer cmd)> &&function)
 	    -> void;
+	auto upload_mesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
+	    -> GPUMeshBuffers;
+
+	auto logger() const -> Logger & { return m_logger; }
 
 private:
 	auto vk_init() -> void;
@@ -96,8 +65,6 @@ private:
 	auto create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
 	auto destroy_buffer(AllocatedBuffer &buffer) -> void;
-	auto upload_mesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
-	    -> GPUMeshBuffers;
 
 	struct {
 		vkb::Instance instance;
@@ -154,6 +121,8 @@ private:
 		VkCommandPool imm_command_pool {};
 
 		uint64_t frame_number { 0 };
+
+		std::vector<std::shared_ptr<Mesh>> test_meshes;
 	} m_vk;
 
 	SDL_Window *m_window { nullptr };

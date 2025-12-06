@@ -10,7 +10,7 @@
 
 namespace Lunar {
 
-class VulkanRenderer;
+struct VulkanRenderer;
 
 struct Application {
 	Application();

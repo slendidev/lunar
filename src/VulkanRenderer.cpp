@@ -151,7 +151,8 @@ auto VulkanRenderer::vk_init() -> void
 	features_13.pNext = nullptr;
 	features_13.synchronization2 = VK_TRUE;
 	features_13.dynamicRendering = VK_TRUE;
-	VkPhysicalDeviceBufferDeviceAddressFeatures buffer_device_address_features {};
+	VkPhysicalDeviceBufferDeviceAddressFeatures
+	    buffer_device_address_features {};
 	buffer_device_address_features.sType
 	    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
 	buffer_device_address_features.bufferDeviceAddress = VK_TRUE;
@@ -587,7 +588,15 @@ auto VulkanRenderer::default_data_init() -> void
 
 	m_vk.rectangle = upload_mesh(rect_indices, rect_vertices);
 
+	m_vk.test_meshes
+	    = Mesh::load_gltf_meshes(*this, "assets/basicmesh.glb").value();
+
 	m_vk.deletion_queue.emplace([&]() {
+		for (auto &mesh : m_vk.test_meshes) {
+			destroy_buffer(mesh->mesh_buffers.index_buffer);
+			destroy_buffer(mesh->mesh_buffers.vertex_buffer);
+		}
+
 		destroy_buffer(m_vk.rectangle.index_buffer);
 		destroy_buffer(m_vk.rectangle.vertex_buffer);
 	});
@@ -762,6 +771,25 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	    cmd, m_vk.rectangle.index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
 	vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+
+	push_constants.vertex_buffer
+	    = m_vk.test_meshes[2]->mesh_buffers.vertex_buffer_address;
+
+	auto const view { smath::translate(smath::Vec3 { 0, 0, -0.1 }) };
+	auto projection { smath::matrix_perspective(smath::deg(70.0f),
+		static_cast<float>(m_vk.draw_extent.width)
+		    / static_cast<float>(m_vk.draw_extent.height),
+		10000.0f, 0.1f) };
+	push_constants.world_matrix = projection * view;
+
+	vkCmdPushConstants(cmd, m_vk.mesh_pipeline_layout,
+	    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
+	vkCmdBindIndexBuffer(cmd,
+	    m_vk.test_meshes[2]->mesh_buffers.index_buffer.buffer, 0,
+	    VK_INDEX_TYPE_UINT32);
+
+	vkCmdDrawIndexed(cmd, m_vk.test_meshes[2]->surfaces[0].count, 1,
+	    m_vk.test_meshes[2]->surfaces[0].start_index, 0, 0);
 
 	vkCmdEndRendering(cmd);
 }
