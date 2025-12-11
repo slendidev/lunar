@@ -13,6 +13,7 @@
 #include "DescriptorAllocator.h"
 #include "Loader.h"
 #include "Logger.h"
+#include "Pipeline.h"
 #include "Types.h"
 
 namespace Lunar {
@@ -119,14 +120,9 @@ private:
 
 		vk::DescriptorSetLayout single_image_descriptor_layout {};
 
-		vk::UniquePipeline gradient_pipeline;
-		vk::UniquePipelineLayout gradient_pipeline_layout;
-
-		vk::Pipeline triangle_pipeline {};
-		vk::UniquePipelineLayout triangle_pipeline_layout;
-
-		vk::Pipeline mesh_pipeline {};
-		vk::UniquePipelineLayout mesh_pipeline_layout;
+		Pipeline gradient_pipeline;
+		Pipeline triangle_pipeline;
+		Pipeline mesh_pipeline;
 
 		GPUMeshBuffers rectangle;
 
