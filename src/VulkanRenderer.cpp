@@ -356,6 +356,15 @@ auto VulkanRenderer::descriptors_init() -> void
 		vkDestroyDescriptorSetLayout(
 		    m_vkb.dev, m_vk.gpu_scene_data_descriptor_layout, nullptr);
 	});
+
+	m_vk.single_image_descriptor_layout
+	    = DescriptorLayoutBuilder()
+	          .add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+	          .build(m_logger, m_vkb.dev, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vk.deletion_queue.emplace([&]() {
+		vkDestroyDescriptorSetLayout(
+		    m_vkb.dev, m_vk.single_image_descriptor_layout, nullptr);
+	});
 }
 
 auto VulkanRenderer::pipelines_init() -> void
@@ -479,7 +488,7 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 	}
 
 	uint8_t triangle_frag_shader_data[] {
-#embed "triangle_mesh_frag.spv"
+#embed "tex_image_frag.spv"
 	};
 	VkShaderModule triangle_frag_shader {};
 	if (!vkutil::load_shader_module(
@@ -499,6 +508,8 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 	layout_ci.pNext = nullptr;
 	layout_ci.pushConstantRangeCount = 1;
 	layout_ci.pPushConstantRanges = &push_constant_range;
+	layout_ci.setLayoutCount = 1;
+	layout_ci.pSetLayouts = &m_vk.single_image_descriptor_layout;
 
 	VK_CHECK(m_logger,
 	    vkCreatePipelineLayout(
@@ -862,18 +873,6 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 
 	vkCmdBeginRendering(cmd, &render_info);
 
-	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
-		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
-		false) };
-	auto projection {
-		smath::matrix_perspective(smath::deg(70.0f),
-		    static_cast<float>(m_vk.draw_extent.width)
-		        / static_cast<float>(m_vk.draw_extent.height),
-		    0.1f, 10000.0f),
-	};
-	projection[1][1] *= -1;
-	auto view_projection { projection * view };
-
 	vkCmdBindPipeline(
 	    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.triangle_pipeline);
 
@@ -893,6 +892,30 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.mesh_pipeline);
+
+	auto const image_set { m_vk.get_current_frame().frame_descriptors.allocate(
+		m_logger, m_vkb.dev, m_vk.single_image_descriptor_layout) };
+	DescriptorWriter()
+	    .write_image(0, m_vk.error_image.image_view,
+	        m_vk.default_sampler_nearest,
+	        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+	    .update_set(m_vkb.dev, image_set);
+
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+	    m_vk.mesh_pipeline_layout, 0, 1, &image_set, 0, nullptr);
+
+	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
+		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
+		false) };
+	auto projection {
+		smath::matrix_perspective(smath::deg(70.0f),
+		    static_cast<float>(m_vk.draw_extent.width)
+		        / static_cast<float>(m_vk.draw_extent.height),
+		    0.1f, 10000.0f),
+	};
+	projection[1][1] *= -1;
+	auto view_projection { projection * view };
 
 	GPUDrawPushConstants push_constants;
 	auto rect_model { smath::scale(

@@ -178,7 +178,7 @@ auto Mesh::load_gltf_meshes(
 				}
 			}
 
-			constexpr bool OVERRIDE_COLORS = true;
+			constexpr bool OVERRIDE_COLORS = false;
 			if (OVERRIDE_COLORS) {
 				for (auto &vtx : vertices) {
 					vtx.color = smath::Vec4(vtx.normal, 1.f);

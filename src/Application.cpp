@@ -89,6 +89,7 @@ auto Application::run() -> void
 		ImGui::NewFrame();
 
 		if (m_show_imgui) {
+			ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
 			ImGui::ShowDemoWindow();
 
 			ImGui::SetNextWindowSize({ 100, 50 });

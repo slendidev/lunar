@@ -19,6 +19,7 @@ shader_sources = files(
 	'triangle.vert',
 	'triangle_mesh.frag',
 	'triangle_mesh.vert',
+	'tex_image.frag',
 )
 
 spirv_shaders = []
