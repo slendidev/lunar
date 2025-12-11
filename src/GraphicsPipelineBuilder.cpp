@@ -41,10 +41,11 @@ auto GraphicsPipelineBuilder::set_shaders(VkShaderModule vs, VkShaderModule fs)
 {
 	m_shader_stages.clear();
 
-	m_shader_stages.emplace_back(
-	    vkinit::pipeline_shader_stage(VK_SHADER_STAGE_VERTEX_BIT, vs));
-	m_shader_stages.emplace_back(
-	    vkinit::pipeline_shader_stage(VK_SHADER_STAGE_FRAGMENT_BIT, fs));
+	m_shader_stages.emplace_back(vkinit::pipeline_shader_stage(
+	    static_cast<vk::ShaderStageFlagBits>(VK_SHADER_STAGE_VERTEX_BIT), vs));
+	m_shader_stages.emplace_back(vkinit::pipeline_shader_stage(
+	    static_cast<vk::ShaderStageFlagBits>(VK_SHADER_STAGE_FRAGMENT_BIT),
+	    fs));
 
 	return *this;
 }

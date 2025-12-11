@@ -1,6 +1,9 @@
+#define VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include "VulkanRenderer.h"
 
+#include <cassert>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <iostream>
 #include <print>
@@ -11,12 +14,13 @@
 #include <VkBootstrap.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
-#include <vulkan/vulkan_core.h>
 
 #include "DescriptorLayoutBuilder.h"
 #include "DescriptorWriter.h"
 #include "GraphicsPipelineBuilder.h"
 #include "Util.h"
+
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 namespace Lunar {
 
@@ -40,16 +44,34 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
 
 VulkanRenderer::~VulkanRenderer()
 {
-	vkDeviceWaitIdle(m_vkb.dev);
+	m_device.waitIdle();
 
 	for (auto &frame_data : m_vk.frames) {
-		vkDestroyCommandPool(m_vkb.dev, frame_data.command_pool, nullptr);
-
-		vkDestroyFence(m_vkb.dev, frame_data.render_fence, nullptr);
-		vkDestroySemaphore(m_vkb.dev, frame_data.swapchain_semaphore, nullptr);
-
 		frame_data.deletion_queue.flush();
+		frame_data.main_command_buffer.reset();
+		frame_data.command_pool.reset();
+		frame_data.swapchain_semaphore.reset();
+		frame_data.render_fence.reset();
 	}
+	m_vk.present_semaphores.clear();
+	m_vk.swapchain_image_views.clear();
+	m_vk.imm_command_buffer.reset();
+	m_vk.imm_command_pool.reset();
+	m_vk.imm_fence.reset();
+	m_vk.gradient_pipeline.reset();
+	m_vk.gradient_pipeline_layout.reset();
+	if (m_vk.triangle_pipeline) {
+		m_device.destroyPipeline(m_vk.triangle_pipeline);
+		m_vk.triangle_pipeline = vk::Pipeline {};
+	}
+	m_vk.triangle_pipeline_layout.reset();
+	if (m_vk.mesh_pipeline) {
+		m_device.destroyPipeline(m_vk.mesh_pipeline);
+		m_vk.mesh_pipeline = vk::Pipeline {};
+	}
+	m_vk.mesh_pipeline_layout.reset();
+	m_vk.default_sampler_linear.reset();
+	m_vk.default_sampler_nearest.reset();
 
 	destroy_swapchain();
 	destroy_draw_image();
@@ -57,7 +79,16 @@ VulkanRenderer::~VulkanRenderer()
 
 	m_vk.deletion_queue.flush();
 
-	SDL_Vulkan_DestroySurface(m_vkb.instance, m_vk.surface, nullptr);
+	if (m_vk.allocator) {
+		vmaDestroyAllocator(m_vk.allocator);
+		m_vk.allocator = nullptr;
+	}
+
+	if (m_vk.surface) {
+		SDL_Vulkan_DestroySurface(
+		    m_vkb.instance, static_cast<VkSurfaceKHR>(m_vk.surface), nullptr);
+		m_vk.surface = nullptr;
+	}
 
 	vkb::destroy_device(m_vkb.dev);
 	vkb::destroy_instance(m_vkb.instance);
@@ -69,42 +100,38 @@ auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 }
 
 auto VulkanRenderer::immediate_submit(
-    std::function<void(VkCommandBuffer cmd)> &&function) -> void
+    std::function<void(vk::CommandBuffer cmd)> &&function) -> void
 {
-	VK_CHECK(m_logger, vkResetFences(m_vkb.dev, 1, &m_vk.imm_fence));
-	VK_CHECK(m_logger, vkResetCommandBuffer(m_vk.imm_command_buffer, 0));
+	m_device.resetFences(m_vk.imm_fence.get());
+	m_vk.imm_command_buffer.get().reset();
 
-	auto cmd { m_vk.imm_command_buffer };
-	VkCommandBufferBeginInfo cmd_begin_info {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-		.pNext = nullptr,
-		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-		.pInheritanceInfo = nullptr,
-	};
-	VK_CHECK(m_logger, vkBeginCommandBuffer(cmd, &cmd_begin_info));
+	auto cmd { m_vk.imm_command_buffer.get() };
+	vk::CommandBufferBeginInfo cmd_begin_info {};
+	cmd_begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+	cmd.begin(cmd_begin_info);
 
 	function(cmd);
 
-	VK_CHECK(m_logger, vkEndCommandBuffer(cmd));
+	cmd.end();
 
 	auto cmd_info { vkinit::command_buffer_submit_info(cmd) };
 	auto submit { vkinit::submit_info2(&cmd_info, nullptr, nullptr) };
-	VK_CHECK(m_logger,
-	    vkQueueSubmit2(m_vk.graphics_queue, 1, &submit, m_vk.imm_fence));
+	m_vk.graphics_queue.submit2(submit, m_vk.imm_fence.get());
 
 	VK_CHECK(m_logger,
-	    vkWaitForFences(m_vkb.dev, 1, &m_vk.imm_fence, true, 9999999999));
+	    m_device.waitForFences(m_vk.imm_fence.get(), true, 9'999'999'999));
 
 	m_vk.get_current_frame().deletion_queue.flush();
-	m_vk.get_current_frame().frame_descriptors.clear_pools(m_vkb.dev);
+	m_vk.get_current_frame().frame_descriptors.clear_pools(m_vkb.dev.device);
 }
 
 auto VulkanRenderer::vk_init() -> void
 {
+	VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
+
 	vkb::InstanceBuilder instance_builder {};
 	instance_builder
 	    .enable_extension(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME)
-	    .request_validation_layers()
 	    .set_app_name("Lunar")
 	    .set_engine_name("Lunar")
 	    .require_api_version(1, 3, 0)
@@ -135,6 +162,9 @@ auto VulkanRenderer::vk_init() -> void
 
 		        return VK_FALSE;
 	        });
+#ifndef NDEBUG
+	instance_builder.request_validation_layers();
+#endif
 	auto const instance_builder_ret { instance_builder.build() };
 	if (!instance_builder_ret) {
 		std::println(std::cerr, "Failed to create Vulkan instance. Error: {}",
@@ -143,12 +173,16 @@ auto VulkanRenderer::vk_init() -> void
 	}
 
 	m_vkb.instance = instance_builder_ret.value();
+	m_instance = vk::Instance { m_vkb.instance.instance };
+	VULKAN_HPP_DEFAULT_DISPATCHER.init(m_instance);
 
+	VkSurfaceKHR raw_surface {};
 	if (!SDL_Vulkan_CreateSurface(
-	        m_window, m_vkb.instance, nullptr, &m_vk.surface)) {
+	        m_window, m_vkb.instance, nullptr, &raw_surface)) {
 		m_logger.err("Failed to create vulkan surface");
 		throw std::runtime_error("App init fail");
 	}
+	m_vk.surface = vk::SurfaceKHR { raw_surface };
 
 	vkb::PhysicalDeviceSelector phys_device_selector { m_vkb.instance };
 	VkPhysicalDeviceVulkan13Features features_13 {};
@@ -186,6 +220,7 @@ auto VulkanRenderer::vk_init() -> void
 		throw std::runtime_error("App init fail");
 	}
 	m_vkb.phys_dev = physical_device_selector_return.value();
+	m_physical_device = vk::PhysicalDevice { m_vkb.phys_dev.physical_device };
 
 	m_logger.info("Chosen Vulkan physical device: {}",
 	    m_vkb.phys_dev.properties.deviceName);
@@ -198,14 +233,8 @@ auto VulkanRenderer::vk_init() -> void
 		throw std::runtime_error("App init fail");
 	}
 	m_vkb.dev = dev_ret.value();
-
-	auto queue_ret { m_vkb.dev.get_queue(vkb::QueueType::graphics) };
-	if (!queue_ret) {
-		std::println(std::cerr, "Failed to get graphics queue. Error: {}",
-		    queue_ret.error().message());
-		throw std::runtime_error("App init fail");
-	}
-	m_vk.graphics_queue = queue_ret.value();
+	m_device = vk::Device { m_vkb.dev.device };
+	VULKAN_HPP_DEFAULT_DISPATCHER.init(m_device);
 
 	auto queue_family_ret { m_vkb.dev.get_queue_index(
 		vkb::QueueType::graphics) };
@@ -215,16 +244,14 @@ auto VulkanRenderer::vk_init() -> void
 		throw std::runtime_error("App init fail");
 	}
 	m_vk.graphics_queue_family = queue_family_ret.value();
+	m_vk.graphics_queue = m_device.getQueue(m_vk.graphics_queue_family, 0);
 
 	VmaAllocatorCreateInfo allocator_ci {};
-	allocator_ci.physicalDevice = m_vkb.phys_dev;
-	allocator_ci.device = m_vkb.dev;
-	allocator_ci.instance = m_vkb.instance;
+	allocator_ci.physicalDevice = m_vkb.phys_dev.physical_device;
+	allocator_ci.device = m_vkb.dev.device;
+	allocator_ci.instance = m_vkb.instance.instance;
 	allocator_ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 	vmaCreateAllocator(&allocator_ci, &m_vk.allocator);
-
-	m_vk.deletion_queue.emplace(
-	    [this]() { vmaDestroyAllocator(m_vk.allocator); });
 }
 
 auto VulkanRenderer::swapchain_init() -> void
@@ -238,74 +265,44 @@ auto VulkanRenderer::swapchain_init() -> void
 
 auto VulkanRenderer::commands_init() -> void
 {
-	VkCommandPoolCreateInfo ci {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-		.queueFamilyIndex = m_vk.graphics_queue_family,
-	};
+	vk::CommandPoolCreateInfo ci {};
+	ci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+	ci.queueFamilyIndex = m_vk.graphics_queue_family;
 	for (auto &frame_data : m_vk.frames) {
-		VK_CHECK(m_logger,
-		    vkCreateCommandPool(
-		        m_vkb.dev, &ci, nullptr, &frame_data.command_pool));
+		frame_data.command_pool = m_device.createCommandPoolUnique(ci);
 
-		VkCommandBufferAllocateInfo ai {
-			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-			.pNext = nullptr,
-			.commandPool = frame_data.command_pool,
-			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = 1,
-		};
+		vk::CommandBufferAllocateInfo ai {};
+		ai.commandPool = frame_data.command_pool.get();
+		ai.level = vk::CommandBufferLevel::ePrimary;
+		ai.commandBufferCount = 1;
 
-		VK_CHECK(m_logger,
-		    vkAllocateCommandBuffers(
-		        m_vkb.dev, &ai, &frame_data.main_command_buffer));
+		frame_data.main_command_buffer
+		    = std::move(m_device.allocateCommandBuffersUnique(ai).front());
 	}
 
-	VK_CHECK(m_logger,
-	    vkCreateCommandPool(m_vkb.dev, &ci, nullptr, &m_vk.imm_command_pool));
+	m_vk.imm_command_pool = m_device.createCommandPoolUnique(ci);
 
-	VkCommandBufferAllocateInfo ai {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-		.pNext = nullptr,
-		.commandPool = m_vk.imm_command_pool,
-		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-		.commandBufferCount = 1,
-	};
-	VK_CHECK(m_logger,
-	    vkAllocateCommandBuffers(m_vkb.dev, &ai, &m_vk.imm_command_buffer));
-
-	m_vk.deletion_queue.emplace([this]() {
-		vkDestroyCommandPool(m_vkb.dev, m_vk.imm_command_pool, nullptr);
-	});
+	vk::CommandBufferAllocateInfo ai {};
+	ai.commandPool = m_vk.imm_command_pool.get();
+	ai.level = vk::CommandBufferLevel::ePrimary;
+	ai.commandBufferCount = 1;
+	m_vk.imm_command_buffer
+	    = std::move(m_device.allocateCommandBuffersUnique(ai).front());
 }
 
 auto VulkanRenderer::sync_init() -> void
 {
-	VkFenceCreateInfo fence_ci {
-		.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = VK_FENCE_CREATE_SIGNALED_BIT,
-	};
-	VkSemaphoreCreateInfo semaphore_ci {
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-	};
-	for (auto &frame_data : m_vk.frames) {
-		VK_CHECK(m_logger,
-		    vkCreateFence(
-		        m_vkb.dev, &fence_ci, nullptr, &frame_data.render_fence));
+	vk::FenceCreateInfo fence_ci {};
+	fence_ci.flags = vk::FenceCreateFlagBits::eSignaled;
+	vk::SemaphoreCreateInfo semaphore_ci {};
 
-		VK_CHECK(m_logger,
-		    vkCreateSemaphore(m_vkb.dev, &semaphore_ci, nullptr,
-		        &frame_data.swapchain_semaphore));
+	for (auto &frame_data : m_vk.frames) {
+		frame_data.render_fence = m_device.createFenceUnique(fence_ci);
+		frame_data.swapchain_semaphore
+		    = m_device.createSemaphoreUnique(semaphore_ci);
 	}
 
-	VK_CHECK(m_logger,
-	    vkCreateFence(m_vkb.dev, &fence_ci, nullptr, &m_vk.imm_fence));
-	m_vk.deletion_queue.emplace(
-	    [this]() { vkDestroyFence(m_vkb.dev, m_vk.imm_fence, nullptr); });
+	m_vk.imm_fence = m_device.createFenceUnique(fence_ci);
 }
 
 auto VulkanRenderer::descriptors_init() -> void
@@ -313,22 +310,27 @@ auto VulkanRenderer::descriptors_init() -> void
 	std::vector<DescriptorAllocator::PoolSizeRatio> sizes {
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
 	};
-	m_vk.descriptor_allocator.init_pool(m_vkb.dev, 10, sizes);
+	m_vk.descriptor_allocator.init_pool(m_vkb.dev.device, 10, sizes);
 
-	m_vk.draw_image_descriptor_layout
+	auto draw_layout_raw
 	    = DescriptorLayoutBuilder()
 	          .add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-	          .build(m_logger, m_vkb.dev, VK_SHADER_STAGE_COMPUTE_BIT);
+	          .build(m_logger, m_vkb.dev.device, VK_SHADER_STAGE_COMPUTE_BIT);
+	m_vk.draw_image_descriptor_layout
+	    = vk::DescriptorSetLayout { draw_layout_raw };
 
 	m_vk.draw_image_descriptors = m_vk.descriptor_allocator.allocate(
-	    m_logger, m_vkb.dev, m_vk.draw_image_descriptor_layout);
+	    m_logger, m_vkb.dev.device, m_vk.draw_image_descriptor_layout);
 
 	update_draw_image_descriptor();
 
 	m_vk.deletion_queue.emplace([&]() {
-		m_vk.descriptor_allocator.destroy_pool(m_vkb.dev);
-		vkDestroyDescriptorSetLayout(
-		    m_vkb.dev, m_vk.draw_image_descriptor_layout, nullptr);
+		m_vk.descriptor_allocator.destroy_pool(m_vkb.dev.device);
+		m_device.destroyDescriptorSetLayout(m_vk.draw_image_descriptor_layout);
+		m_device.destroyDescriptorSetLayout(
+		    m_vk.gpu_scene_data_descriptor_layout);
+		m_device.destroyDescriptorSetLayout(
+		    m_vk.single_image_descriptor_layout);
 	});
 
 	for (unsigned int i = 0; i < FRAME_OVERLAP; i++) {
@@ -340,31 +342,28 @@ auto VulkanRenderer::descriptors_init() -> void
 		};
 
 		m_vk.frames[i].frame_descriptors = DescriptorAllocatorGrowable {};
-		m_vk.frames[i].frame_descriptors.init(m_vkb.dev, 1000, frame_sizes);
+		m_vk.frames[i].frame_descriptors.init(
+		    m_vkb.dev.device, 1000, frame_sizes);
 
 		m_vk.deletion_queue.emplace([&, i]() {
-			m_vk.frames[i].frame_descriptors.destroy_pools(m_vkb.dev);
+			m_vk.frames[i].frame_descriptors.destroy_pools(m_vkb.dev.device);
 		});
 	}
 
-	m_vk.gpu_scene_data_descriptor_layout
+	auto scene_layout_raw
 	    = DescriptorLayoutBuilder()
 	          .add_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-	          .build(m_logger, m_vkb.dev,
+	          .build(m_logger, m_vkb.dev.device,
 	              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
-	m_vk.deletion_queue.emplace([&]() {
-		vkDestroyDescriptorSetLayout(
-		    m_vkb.dev, m_vk.gpu_scene_data_descriptor_layout, nullptr);
-	});
+	m_vk.gpu_scene_data_descriptor_layout
+	    = vk::DescriptorSetLayout { scene_layout_raw };
 
-	m_vk.single_image_descriptor_layout
+	auto single_layout_raw
 	    = DescriptorLayoutBuilder()
 	          .add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-	          .build(m_logger, m_vkb.dev, VK_SHADER_STAGE_FRAGMENT_BIT);
-	m_vk.deletion_queue.emplace([&]() {
-		vkDestroyDescriptorSetLayout(
-		    m_vkb.dev, m_vk.single_image_descriptor_layout, nullptr);
-	});
+	          .build(m_logger, m_vkb.dev.device, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vk.single_image_descriptor_layout
+	    = vk::DescriptorSetLayout { single_layout_raw };
 }
 
 auto VulkanRenderer::pipelines_init() -> void
@@ -376,45 +375,36 @@ auto VulkanRenderer::pipelines_init() -> void
 
 auto VulkanRenderer::background_pipelines_init() -> void
 {
-	VkPipelineLayoutCreateInfo layout_ci {};
-	layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layout_ci.pNext = nullptr;
-	layout_ci.pSetLayouts = &m_vk.draw_image_descriptor_layout;
+	vk::PipelineLayoutCreateInfo layout_ci {};
+	auto draw_layout_handle = m_vk.draw_image_descriptor_layout;
+	layout_ci.pSetLayouts = &draw_layout_handle;
 	layout_ci.setLayoutCount = 1;
 
-	VK_CHECK(m_logger,
-	    vkCreatePipelineLayout(
-	        m_vkb.dev, &layout_ci, nullptr, &m_vk.gradient_pipeline_layout));
+	m_vk.gradient_pipeline_layout
+	    = m_device.createPipelineLayoutUnique(layout_ci);
 
 	uint8_t compute_draw_shader_data[] {
 #embed "gradient_comp.spv"
 	};
-	VkShaderModule compute_draw_shader {};
-	if (!vkutil::load_shader_module(std::span<uint8_t>(compute_draw_shader_data,
-	                                    sizeof(compute_draw_shader_data)),
-	        m_vkb.dev, &compute_draw_shader)) {
+	auto compute_draw_shader { vkutil::load_shader_module(
+		std::span<uint8_t>(
+		    compute_draw_shader_data, sizeof(compute_draw_shader_data)),
+		m_device) };
+	if (!compute_draw_shader) {
 		m_logger.err("Failed to load gradient compute shader");
 	}
 
 	auto stage_ci { vkinit::pipeline_shader_stage(
-		VK_SHADER_STAGE_COMPUTE_BIT, compute_draw_shader) };
+		vk::ShaderStageFlagBits::eCompute, compute_draw_shader.get()) };
 
-	VkComputePipelineCreateInfo compute_pip_ci {};
-	compute_pip_ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	compute_pip_ci.pNext = nullptr;
-	compute_pip_ci.layout = m_vk.gradient_pipeline_layout;
+	vk::ComputePipelineCreateInfo compute_pip_ci {};
+	compute_pip_ci.layout = m_vk.gradient_pipeline_layout.get();
 	compute_pip_ci.stage = stage_ci;
 
-	VK_CHECK(m_logger,
-	    vkCreateComputePipelines(m_vkb.dev, VK_NULL_HANDLE, 1, &compute_pip_ci,
-	        nullptr, &m_vk.gradient_pipeline));
-
-	vkDestroyShaderModule(m_vkb.dev, compute_draw_shader, nullptr);
-	m_vk.deletion_queue.emplace([&]() {
-		vkDestroyPipelineLayout(
-		    m_vkb.dev, m_vk.gradient_pipeline_layout, nullptr);
-		vkDestroyPipeline(m_vkb.dev, m_vk.gradient_pipeline, nullptr);
-	});
+	auto pipeline_ret
+	    = m_device.createComputePipelineUnique({}, compute_pip_ci);
+	VK_CHECK(m_logger, pipeline_ret.result);
+	m_vk.gradient_pipeline = std::move(pipeline_ret.value);
 }
 
 auto VulkanRenderer::triangle_pipeline_init() -> void
@@ -422,56 +412,46 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 	uint8_t triangle_vert_shader_data[] {
 #embed "triangle_vert.spv"
 	};
-	VkShaderModule triangle_vert_shader {};
-	if (!vkutil::load_shader_module(
-	        std::span<uint8_t>(
-	            triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
-	        m_vkb.dev, &triangle_vert_shader)) {
+	auto triangle_vert_shader = vkutil::load_shader_module(
+	    std::span<uint8_t>(
+	        triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
+	    m_device);
+	if (!triangle_vert_shader) {
 		m_logger.err("Failed to load triangle vert shader");
 	}
 
 	uint8_t triangle_frag_shader_data[] {
 #embed "triangle_frag.spv"
 	};
-	VkShaderModule triangle_frag_shader {};
-	if (!vkutil::load_shader_module(
-	        std::span<uint8_t>(
-	            triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
-	        m_vkb.dev, &triangle_frag_shader)) {
+	auto triangle_frag_shader = vkutil::load_shader_module(
+	    std::span<uint8_t>(
+	        triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
+	    m_device);
+	if (!triangle_frag_shader) {
 		m_logger.err("Failed to load triangle frag shader");
 	}
 
-	VkPipelineLayoutCreateInfo layout_ci {};
-	layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layout_ci.pNext = nullptr;
+	vk::PipelineLayoutCreateInfo layout_ci {};
+	m_vk.triangle_pipeline_layout
+	    = m_device.createPipelineLayoutUnique(layout_ci);
 
-	VK_CHECK(m_logger,
-	    vkCreatePipelineLayout(
-	        m_vkb.dev, &layout_ci, nullptr, &m_vk.triangle_pipeline_layout));
-
-	auto pip {
-		GraphicsPipelineBuilder { m_logger }
-		    .set_pipeline_layout(m_vk.triangle_pipeline_layout)
-		    .set_shaders(triangle_vert_shader, triangle_frag_shader)
-		    .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-		    .set_polygon_mode(VK_POLYGON_MODE_FILL)
-		    .set_multisampling_none()
-		    .enable_blending_additive()
-		    .disable_depth_testing()
-		    .set_color_attachment_format(m_vk.draw_image.format)
-		    .set_depth_format(m_vk.depth_image.format)
-		    .build(m_vkb.dev),
-	};
-	m_vk.triangle_pipeline = pip;
-
-	vkDestroyShaderModule(m_vkb.dev, triangle_vert_shader, nullptr);
-	vkDestroyShaderModule(m_vkb.dev, triangle_frag_shader, nullptr);
-
-	m_vk.deletion_queue.emplace([&]() {
-		vkDestroyPipelineLayout(
-		    m_vkb.dev, m_vk.triangle_pipeline_layout, nullptr);
-		vkDestroyPipeline(m_vkb.dev, m_vk.triangle_pipeline, nullptr);
-	});
+	auto pip
+	    = GraphicsPipelineBuilder { m_logger }
+	          .set_pipeline_layout(m_vk.triangle_pipeline_layout.get())
+	          .set_shaders(
+	              triangle_vert_shader.get(), triangle_frag_shader.get())
+	          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+	          .set_polygon_mode(VK_POLYGON_MODE_FILL)
+	          .set_multisampling_none()
+	          .enable_blending_additive()
+	          .disable_depth_testing()
+	          .set_color_attachment_format(
+	              static_cast<VkFormat>(m_vk.draw_image.format))
+	          .set_depth_format(static_cast<VkFormat>(m_vk.depth_image.format))
+	          .build(m_vkb.dev.device);
+	m_vk.triangle_pipeline = vk::Pipeline { pip };
+	m_vk.deletion_queue.emplace(
+	    [this]() { m_device.destroyPipeline(m_vk.triangle_pipeline); });
 }
 
 auto VulkanRenderer::mesh_pipeline_init() -> void
@@ -479,65 +459,57 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 	uint8_t triangle_vert_shader_data[] {
 #embed "triangle_mesh_vert.spv"
 	};
-	VkShaderModule triangle_vert_shader {};
-	if (!vkutil::load_shader_module(
-	        std::span<uint8_t>(
-	            triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
-	        m_vkb.dev, &triangle_vert_shader)) {
+	auto triangle_vert_shader = vkutil::load_shader_module(
+	    std::span<uint8_t>(
+	        triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
+	    m_device);
+	if (!triangle_vert_shader) {
 		m_logger.err("Failed to load triangle vert shader");
 	}
 
 	uint8_t triangle_frag_shader_data[] {
 #embed "tex_image_frag.spv"
 	};
-	VkShaderModule triangle_frag_shader {};
-	if (!vkutil::load_shader_module(
-	        std::span<uint8_t>(
-	            triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
-	        m_vkb.dev, &triangle_frag_shader)) {
+	auto triangle_frag_shader = vkutil::load_shader_module(
+	    std::span<uint8_t>(
+	        triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
+	    m_device);
+	if (!triangle_frag_shader) {
 		m_logger.err("Failed to load triangle frag shader");
 	}
 
-	VkPushConstantRange push_constant_range {};
-	push_constant_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	vk::PushConstantRange push_constant_range {};
+	push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
 	push_constant_range.offset = 0;
 	push_constant_range.size = sizeof(GPUDrawPushConstants);
 
-	VkPipelineLayoutCreateInfo layout_ci {};
-	layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layout_ci.pNext = nullptr;
+	vk::PipelineLayoutCreateInfo layout_ci {};
 	layout_ci.pushConstantRangeCount = 1;
 	layout_ci.pPushConstantRanges = &push_constant_range;
+	auto single_layout = m_vk.single_image_descriptor_layout;
 	layout_ci.setLayoutCount = 1;
-	layout_ci.pSetLayouts = &m_vk.single_image_descriptor_layout;
+	layout_ci.pSetLayouts = &single_layout;
 
-	VK_CHECK(m_logger,
-	    vkCreatePipelineLayout(
-	        m_vkb.dev, &layout_ci, nullptr, &m_vk.mesh_pipeline_layout));
+	m_vk.mesh_pipeline_layout = m_device.createPipelineLayoutUnique(layout_ci);
 
-	auto pip {
-		GraphicsPipelineBuilder { m_logger }
-		    .set_pipeline_layout(m_vk.mesh_pipeline_layout)
-		    .set_shaders(triangle_vert_shader, triangle_frag_shader)
-		    .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-		    .set_polygon_mode(VK_POLYGON_MODE_FILL)
-		    .set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
-		    .set_multisampling_none()
-		    .disable_blending()
-		    .enable_depth_testing()
-		    .set_color_attachment_format(m_vk.draw_image.format)
-		    .set_depth_format(m_vk.depth_image.format)
-		    .build(m_vkb.dev),
-	};
-	m_vk.mesh_pipeline = pip;
-
-	vkDestroyShaderModule(m_vkb.dev, triangle_vert_shader, nullptr);
-	vkDestroyShaderModule(m_vkb.dev, triangle_frag_shader, nullptr);
-
-	m_vk.deletion_queue.emplace([&]() {
-		vkDestroyPipelineLayout(m_vkb.dev, m_vk.mesh_pipeline_layout, nullptr);
-		vkDestroyPipeline(m_vkb.dev, m_vk.mesh_pipeline, nullptr);
-	});
+	auto pip
+	    = GraphicsPipelineBuilder { m_logger }
+	          .set_pipeline_layout(m_vk.mesh_pipeline_layout.get())
+	          .set_shaders(
+	              triangle_vert_shader.get(), triangle_frag_shader.get())
+	          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+	          .set_polygon_mode(VK_POLYGON_MODE_FILL)
+	          .set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
+	          .set_multisampling_none()
+	          .disable_blending()
+	          .enable_depth_testing()
+	          .set_color_attachment_format(
+	              static_cast<VkFormat>(m_vk.draw_image.format))
+	          .set_depth_format(static_cast<VkFormat>(m_vk.depth_image.format))
+	          .build(m_vkb.dev.device);
+	m_vk.mesh_pipeline = vk::Pipeline { pip };
+	m_vk.deletion_queue.emplace(
+	    [this]() { m_device.destroyPipeline(m_vk.mesh_pipeline); });
 }
 
 auto VulkanRenderer::imgui_init() -> void
@@ -563,9 +535,7 @@ auto VulkanRenderer::imgui_init() -> void
 	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
 	pool_info.pPoolSizes = pool_sizes;
 
-	VK_CHECK(m_logger,
-	    vkCreateDescriptorPool(
-	        m_vkb.dev, &pool_info, nullptr, &m_vk.imgui_descriptor_pool));
+	m_vk.imgui_descriptor_pool = m_device.createDescriptorPoolUnique(pool_info);
 
 	ImGui::CreateContext();
 
@@ -573,10 +543,10 @@ auto VulkanRenderer::imgui_init() -> void
 
 	ImGui_ImplVulkan_InitInfo init_info = {};
 	init_info.Instance = m_vkb.instance;
-	init_info.PhysicalDevice = m_vkb.phys_dev;
-	init_info.Device = m_vkb.dev;
-	init_info.Queue = m_vk.graphics_queue;
-	init_info.DescriptorPool = m_vk.imgui_descriptor_pool;
+	init_info.PhysicalDevice = m_vkb.phys_dev.physical_device;
+	init_info.Device = m_vkb.dev.device;
+	init_info.Queue = static_cast<VkQueue>(m_vk.graphics_queue);
+	init_info.DescriptorPool = m_vk.imgui_descriptor_pool.get();
 	init_info.MinImageCount = 3;
 	init_info.ImageCount = 3;
 	init_info.UseDynamicRendering = true;
@@ -585,9 +555,10 @@ auto VulkanRenderer::imgui_init() -> void
 	    = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount
 	    = 1;
+	auto swapchain_format = static_cast<VkFormat>(m_vk.swapchain_image_format);
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo
 	    .pColorAttachmentFormats
-	    = &m_vk.swapchain_image_format;
+	    = &swapchain_format;
 
 	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
@@ -597,11 +568,7 @@ auto VulkanRenderer::imgui_init() -> void
 		ImGui_ImplVulkan_Shutdown();
 		ImGui_ImplSDL3_Shutdown();
 		ImGui::DestroyContext();
-		if (m_vk.imgui_descriptor_pool != VK_NULL_HANDLE) {
-			vkDestroyDescriptorPool(
-			    m_vkb.dev, m_vk.imgui_descriptor_pool, nullptr);
-			m_vk.imgui_descriptor_pool = VK_NULL_HANDLE;
-		}
+		m_vk.imgui_descriptor_pool.reset();
 	});
 }
 
@@ -613,6 +580,19 @@ auto VulkanRenderer::default_data_init() -> void
 	rect_vertices[1].position = { 0.5, 0.5, 0 };
 	rect_vertices[2].position = { -0.5, -0.5, 0 };
 	rect_vertices[3].position = { -0.5, 0.5, 0 };
+
+	rect_vertices[0].u = 1.0f;
+	rect_vertices[0].v = 1.0f;
+	rect_vertices[1].u = 1.0f;
+	rect_vertices[1].v = 0.0f;
+	rect_vertices[2].u = 0.0f;
+	rect_vertices[2].v = 1.0f;
+	rect_vertices[3].u = 0.0f;
+	rect_vertices[3].v = 0.0f;
+
+	for (auto &v : rect_vertices) {
+		v.normal = { 0.0f, 0.0f, 1.0f };
+	}
 
 	rect_vertices[0].color = { 0, 0, 0, 1 };
 	rect_vertices[1].color = { 0.5, 0.5, 0.5, 1 };
@@ -647,17 +627,17 @@ auto VulkanRenderer::default_data_init() -> void
 	{
 		// Solid color images
 		auto const white = smath::pack_unorm4x8(smath::Vec4 { 1, 1, 1, 1 });
-		m_vk.white_image = create_image(&white, VkExtent3D { 1, 1, 1 },
-		    VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		m_vk.white_image = create_image(&white, vk::Extent3D { 1, 1, 1 },
+		    vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 
 		auto const black = smath::pack_unorm4x8(smath::Vec4 { 0, 0, 0, 1 });
-		m_vk.black_image = create_image(&black, VkExtent3D { 1, 1, 1 },
-		    VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		m_vk.black_image = create_image(&black, vk::Extent3D { 1, 1, 1 },
+		    vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 
 		auto const gray
 		    = smath::pack_unorm4x8(smath::Vec4 { 0.6f, 0.6f, 0.6f, 1 });
-		m_vk.gray_image = create_image(&gray, VkExtent3D { 1, 1, 1 },
-		    VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		m_vk.gray_image = create_image(&gray, vk::Extent3D { 1, 1, 1 },
+		    vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 
 		// Error checkerboard image
 		auto const magenta = smath::pack_unorm4x8(smath::Vec4 { 1, 0, 1, 1 });
@@ -669,28 +649,23 @@ auto VulkanRenderer::default_data_init() -> void
 			}
 		}
 		m_vk.error_image
-		    = create_image(checkerboard.data(), VkExtent3D { 16, 16, 1 },
-		        VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		    = create_image(checkerboard.data(), vk::Extent3D { 16, 16, 1 },
+		        vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 	}
 
-	VkSamplerCreateInfo sampler_ci {};
-	sampler_ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	sampler_ci.pNext = nullptr;
+	vk::SamplerCreateInfo sampler_ci {};
 
-	sampler_ci.magFilter = VK_FILTER_NEAREST;
-	sampler_ci.minFilter = VK_FILTER_NEAREST;
-	vkCreateSampler(
-	    m_vkb.dev, &sampler_ci, nullptr, &m_vk.default_sampler_nearest);
+	sampler_ci.magFilter = vk::Filter::eNearest;
+	sampler_ci.minFilter = vk::Filter::eNearest;
+	m_vk.default_sampler_nearest = m_device.createSamplerUnique(sampler_ci);
 
-	sampler_ci.magFilter = VK_FILTER_LINEAR;
-	sampler_ci.minFilter = VK_FILTER_LINEAR;
-	vkCreateSampler(
-	    m_vkb.dev, &sampler_ci, nullptr, &m_vk.default_sampler_linear);
+	sampler_ci.magFilter = vk::Filter::eLinear;
+	sampler_ci.minFilter = vk::Filter::eLinear;
+	m_vk.default_sampler_linear = m_device.createSamplerUnique(sampler_ci);
 
 	m_vk.deletion_queue.emplace([&]() {
-		vkDestroySampler(m_vkb.dev, m_vk.default_sampler_linear, nullptr);
-		vkDestroySampler(m_vkb.dev, m_vk.default_sampler_nearest, nullptr);
-
+		m_vk.default_sampler_linear.reset();
+		m_vk.default_sampler_nearest.reset();
 		destroy_image(m_vk.error_image);
 		destroy_image(m_vk.gray_image);
 		destroy_image(m_vk.black_image);
@@ -702,111 +677,101 @@ auto VulkanRenderer::render() -> void
 {
 	defer(m_vk.frame_number++);
 
-	if (m_vk.swapchain == VK_NULL_HANDLE || m_vk.swapchain_extent.width == 0
+	if (!m_vk.swapchain || m_vk.swapchain_extent.width == 0
 	    || m_vk.swapchain_extent.height == 0) {
 		return;
 	}
 
 	VK_CHECK(m_logger,
-	    vkWaitForFences(m_vkb.dev, 1, &m_vk.get_current_frame().render_fence,
-	        true, 1'000'000'000));
-	VK_CHECK(m_logger,
-	    vkResetFences(m_vkb.dev, 1, &m_vk.get_current_frame().render_fence));
+	    m_device.waitForFences(
+	        m_vk.get_current_frame().render_fence.get(), true, 1'000'000'000));
+	auto raw_fence
+	    = static_cast<VkFence>(m_vk.get_current_frame().render_fence.get());
+	VK_CHECK(m_logger, vkResetFences(m_vkb.dev.device, 1, &raw_fence));
 
-	uint32_t swapchain_image_idx;
-	auto const acquire_result = vkAcquireNextImageKHR(m_vkb.dev, m_vk.swapchain,
-	    1000000000, m_vk.get_current_frame().swapchain_semaphore, nullptr,
-	    &swapchain_image_idx);
-	if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR
-	    || acquire_result == VK_SUBOPTIMAL_KHR) {
+	auto const acquire_result = m_device.acquireNextImageKHR(m_vk.swapchain,
+	    1'000'000'000, m_vk.get_current_frame().swapchain_semaphore.get(), {});
+	if (acquire_result.result == vk::Result::eErrorOutOfDateKHR
+	    || acquire_result.result == vk::Result::eSuboptimalKHR) {
 		int width {}, height {};
 		SDL_GetWindowSize(m_window, &width, &height);
 		recreate_swapchain(
 		    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 		return;
 	}
-	VK_CHECK(m_logger, acquire_result);
+	VK_CHECK(m_logger, acquire_result.result);
+	uint32_t const swapchain_image_idx { acquire_result.value };
 
-	auto cmd { m_vk.get_current_frame().main_command_buffer };
-	VK_CHECK(m_logger, vkResetCommandBuffer(cmd, 0));
+	auto cmd { m_vk.get_current_frame().main_command_buffer.get() };
+	cmd.reset();
 
 	m_vk.draw_extent.width = m_vk.draw_image.extent.width;
 	m_vk.draw_extent.height = m_vk.draw_image.extent.height;
 
-	VkCommandBufferBeginInfo cmd_begin_info {
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-		.pNext = nullptr,
-		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-		.pInheritanceInfo = nullptr,
-	};
-	VK_CHECK(m_logger, vkBeginCommandBuffer(cmd, &cmd_begin_info));
+	vk::CommandBufferBeginInfo cmd_begin_info {};
+	cmd_begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+	VK_CHECK(m_logger,
+	    vkBeginCommandBuffer(static_cast<VkCommandBuffer>(cmd),
+	        reinterpret_cast<VkCommandBufferBeginInfo *>(&cmd_begin_info)));
 
 	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	    vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral);
 
 	draw_background(cmd);
 
 	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	    vk::ImageLayout::eGeneral, vk::ImageLayout::eColorAttachmentOptimal);
 	vkutil::transition_image(cmd, m_vk.depth_image.image,
-	    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+	    vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthAttachmentOptimal);
 
 	draw_geometry(cmd);
 
 	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-	    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	    vk::ImageLayout::eColorAttachmentOptimal,
+	    vk::ImageLayout::eTransferSrcOptimal);
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images.at(swapchain_image_idx),
-	    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	    vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
 
 	vkutil::copy_image_to_image(cmd, m_vk.draw_image.image,
 	    m_vk.swapchain_images.at(swapchain_image_idx), m_vk.draw_extent,
 	    m_vk.swapchain_extent);
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images[swapchain_image_idx],
-	    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	    vk::ImageLayout::eTransferDstOptimal,
+	    vk::ImageLayout::eColorAttachmentOptimal);
 
-	draw_imgui(cmd, m_vk.swapchain_image_views.at(swapchain_image_idx));
+	draw_imgui(cmd, m_vk.swapchain_image_views.at(swapchain_image_idx).get());
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images[swapchain_image_idx],
-	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-	    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+	    vk::ImageLayout::eColorAttachmentOptimal,
+	    vk::ImageLayout::ePresentSrcKHR);
 
-	VK_CHECK(m_logger, vkEndCommandBuffer(cmd));
+	cmd.end();
 
-	VkSemaphore render_semaphore
-	    = m_vk.present_semaphores.at(swapchain_image_idx);
-	VkPipelineStageFlags2 wait_stage
-	    = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	auto render_semaphore
+	    = m_vk.present_semaphores.at(swapchain_image_idx).get();
+	vk::PipelineStageFlags2 wait_stage
+	    = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
 	auto wait_info { vkinit::semaphore_submit_info(
-		wait_stage, m_vk.get_current_frame().swapchain_semaphore) };
+		wait_stage, m_vk.get_current_frame().swapchain_semaphore.get()) };
 	auto command_buffer_info { vkinit::command_buffer_submit_info(cmd) };
 	auto signal_info { vkinit::semaphore_submit_info(
-		VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, render_semaphore) };
+		vk::PipelineStageFlagBits2::eAllCommands, render_semaphore) };
 	auto submit_info { vkinit::submit_info2(
 		&command_buffer_info, &wait_info, &signal_info) };
 
-	VK_CHECK(m_logger,
-	    vkQueueSubmit2(m_vk.graphics_queue, 1, &submit_info,
-	        m_vk.get_current_frame().render_fence));
+	m_vk.graphics_queue.submit2(
+	    submit_info, m_vk.get_current_frame().render_fence.get());
 
-	VkPresentInfoKHR present_info = {};
-	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	present_info.pNext = nullptr;
-	present_info.pSwapchains = &m_vk.swapchain;
-	present_info.swapchainCount = 1;
+	vk::PresentInfoKHR present_info {};
+	present_info.setSwapchains(m_vk.swapchain);
+	present_info.setWaitSemaphores(render_semaphore);
+	present_info.setImageIndices(swapchain_image_idx);
 
-	present_info.pWaitSemaphores = &render_semaphore;
-	present_info.waitSemaphoreCount = 1;
-
-	present_info.pImageIndices = &swapchain_image_idx;
-
-	auto const present_result
-	    = vkQueuePresentKHR(m_vk.graphics_queue, &present_info);
-	if (present_result == VK_ERROR_OUT_OF_DATE_KHR
-	    || present_result == VK_SUBOPTIMAL_KHR) {
+	auto const present_result = m_vk.graphics_queue.presentKHR(present_info);
+	if (present_result == vk::Result::eErrorOutOfDateKHR
+	    || present_result == vk::Result::eSuboptimalKHR) {
 		int width {}, height {};
 		SDL_GetWindowSize(m_window, &width, &height);
 		recreate_swapchain(
@@ -816,22 +781,22 @@ auto VulkanRenderer::render() -> void
 	VK_CHECK(m_logger, present_result);
 }
 
-auto VulkanRenderer::draw_background(VkCommandBuffer cmd) -> void
+auto VulkanRenderer::draw_background(vk::CommandBuffer cmd) -> void
 {
-	vkCmdBindPipeline(
-	    cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_vk.gradient_pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-	    m_vk.gradient_pipeline_layout, 0, 1, &m_vk.draw_image_descriptors, 0,
-	    nullptr);
-	vkCmdDispatch(cmd,
+	cmd.bindPipeline(
+	    vk::PipelineBindPoint::eCompute, m_vk.gradient_pipeline.get());
+	auto compute_set = vk::DescriptorSet { m_vk.draw_image_descriptors };
+	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+	    m_vk.gradient_pipeline_layout.get(), 0, compute_set, {});
+	cmd.dispatch(
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.width / 16.0)),
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.height / 16.0)), 1);
 }
 
-auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
+auto VulkanRenderer::draw_geometry(vk::CommandBuffer cmd) -> void
 {
 	auto gpu_scene_data_buffer { create_buffer(sizeof(GPUSceneData),
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU) };
+		vk::BufferUsageFlagBits::eUniformBuffer, VMA_MEMORY_USAGE_CPU_TO_GPU) };
 	m_vk.get_current_frame().deletion_queue.emplace(
 	    [=, this]() { destroy_buffer(gpu_scene_data_buffer); });
 
@@ -856,54 +821,54 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 
 	auto const global_desc {
 		m_vk.get_current_frame().frame_descriptors.allocate(
-		    m_logger, m_vkb.dev, m_vk.gpu_scene_data_descriptor_layout)
+		    m_logger, m_vkb.dev.device, m_vk.gpu_scene_data_descriptor_layout)
 	};
 
 	DescriptorWriter writer;
 	writer.write_buffer(0, gpu_scene_data_buffer.buffer, sizeof(GPUSceneData),
 	    0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-	writer.update_set(m_vkb.dev, global_desc);
+	writer.update_set(m_vkb.dev.device, global_desc);
 
 	auto color_att { vkinit::attachment_info(m_vk.draw_image.image_view,
-		nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
+		nullptr, vk::ImageLayout::eColorAttachmentOptimal) };
 	auto depth_att { vkinit::depth_attachment_info(m_vk.depth_image.image_view,
-		VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) };
+		vk::ImageLayout::eDepthAttachmentOptimal) };
 	auto const render_info { vkinit::render_info(
 		m_vk.draw_extent, &color_att, &depth_att) };
 
-	vkCmdBeginRendering(cmd, &render_info);
+	cmd.beginRendering(render_info);
 
-	vkCmdBindPipeline(
-	    cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.triangle_pipeline);
+	cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_vk.triangle_pipeline);
 
-	VkViewport viewport {};
+	vk::Viewport viewport {};
 	viewport.x = 0;
 	viewport.y = 0;
 	viewport.width = static_cast<float>(m_vk.draw_extent.width);
 	viewport.height = static_cast<float>(m_vk.draw_extent.height);
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(cmd, 0, 1, &viewport);
+	cmd.setViewport(0, viewport);
 
-	VkRect2D scissor {};
+	vk::Rect2D scissor {};
 	scissor.offset.x = 0;
 	scissor.offset.y = 0;
 	scissor.extent = m_vk.draw_extent;
-	vkCmdSetScissor(cmd, 0, 1, &scissor);
+	cmd.setScissor(0, scissor);
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.mesh_pipeline);
+	cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, m_vk.mesh_pipeline);
 
 	auto const image_set { m_vk.get_current_frame().frame_descriptors.allocate(
-		m_logger, m_vkb.dev, m_vk.single_image_descriptor_layout) };
+		m_logger, m_vkb.dev.device, m_vk.single_image_descriptor_layout) };
 	DescriptorWriter()
 	    .write_image(0, m_vk.error_image.image_view,
-	        m_vk.default_sampler_nearest,
-	        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	        m_vk.default_sampler_nearest.get(),
+	        static_cast<VkImageLayout>(vk::ImageLayout::eShaderReadOnlyOptimal),
 	        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-	    .update_set(m_vkb.dev, image_set);
+	    .update_set(m_vkb.dev.device, image_set);
 
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-	    m_vk.mesh_pipeline_layout, 0, 1, &image_set, 0, nullptr);
+	auto vk_image_set = vk::DescriptorSet { image_set };
+	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+	    m_vk.mesh_pipeline_layout.get(), 0, vk_image_set, {});
 
 	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
 		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
@@ -924,12 +889,13 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	push_constants.world_matrix = view_projection * rect_model;
 	push_constants.vertex_buffer = m_vk.rectangle.vertex_buffer_address;
 
-	vkCmdPushConstants(cmd, m_vk.mesh_pipeline_layout,
-	    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
-	vkCmdBindIndexBuffer(
-	    cmd, m_vk.rectangle.index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+	cmd.pushConstants(m_vk.mesh_pipeline_layout.get(),
+	    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
+	    &push_constants);
+	cmd.bindIndexBuffer(
+	    m_vk.rectangle.index_buffer.buffer, 0, vk::IndexType::eUint32);
 
-	vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+	cmd.drawIndexed(6, 1, 0, 0, 0);
 
 	push_constants.vertex_buffer
 	    = m_vk.test_meshes[2]->mesh_buffers.vertex_buffer_address;
@@ -937,40 +903,41 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	auto model { smath::Mat4::identity() };
 	push_constants.world_matrix = view_projection * model;
 
-	vkCmdPushConstants(cmd, m_vk.mesh_pipeline_layout,
-	    VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push_constants), &push_constants);
-	vkCmdBindIndexBuffer(cmd,
-	    m_vk.test_meshes[2]->mesh_buffers.index_buffer.buffer, 0,
-	    VK_INDEX_TYPE_UINT32);
+	cmd.pushConstants(m_vk.mesh_pipeline_layout.get(),
+	    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
+	    &push_constants);
+	cmd.bindIndexBuffer(m_vk.test_meshes[2]->mesh_buffers.index_buffer.buffer,
+	    0, vk::IndexType::eUint32);
 
-	vkCmdDrawIndexed(cmd, m_vk.test_meshes[2]->surfaces[0].count, 1,
+	cmd.drawIndexed(m_vk.test_meshes[2]->surfaces[0].count, 1,
 	    m_vk.test_meshes[2]->surfaces[0].start_index, 0, 0);
 
-	vkCmdEndRendering(cmd);
+	cmd.endRendering();
 }
 
 auto VulkanRenderer::draw_imgui(
-    VkCommandBuffer cmd, VkImageView target_image_view) -> void
+    vk::CommandBuffer cmd, vk::ImageView target_image_view) -> void
 {
 	auto const color_attachment { vkinit::attachment_info(
-		target_image_view, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
+		target_image_view, nullptr, vk::ImageLayout::eColorAttachmentOptimal) };
 	auto const render_info { vkinit::render_info(
 		m_vk.draw_extent, &color_attachment, nullptr) };
 
-	vkCmdBeginRendering(cmd, &render_info);
+	cmd.beginRendering(render_info);
 
-	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+	ImGui_ImplVulkan_RenderDrawData(
+	    ImGui::GetDrawData(), static_cast<VkCommandBuffer>(cmd));
 
-	vkCmdEndRendering(cmd);
+	cmd.endRendering();
 }
 
 auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void
 {
 	vkb::SwapchainBuilder builder { m_vkb.phys_dev, m_vkb.dev, m_vk.surface };
-	m_vk.swapchain_image_format = VK_FORMAT_B8G8R8A8_UNORM;
+	m_vk.swapchain_image_format = vk::Format::eB8G8R8A8Unorm;
 	auto const swapchain_ret { builder
 		    .set_desired_format({
-		        .format = m_vk.swapchain_image_format,
+		        .format = static_cast<VkFormat>(m_vk.swapchain_image_format),
 		        .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
 		    })
 		    .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
@@ -985,19 +952,28 @@ auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void
 	m_vkb.swapchain = swapchain_ret.value();
 
 	m_vk.swapchain = m_vkb.swapchain.swapchain;
-	m_vk.swapchain_extent = m_vkb.swapchain.extent;
-	m_vk.swapchain_images = m_vkb.swapchain.get_images().value();
-	m_vk.swapchain_image_views = m_vkb.swapchain.get_image_views().value();
+	m_vk.swapchain_extent = vk::Extent2D { m_vkb.swapchain.extent.width,
+		m_vkb.swapchain.extent.height };
+	auto images = m_vkb.swapchain.get_images().value();
+	m_vk.swapchain_images.assign(images.begin(), images.end());
 
-	VkSemaphoreCreateInfo semaphore_ci {
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-		.pNext = nullptr,
-		.flags = 0,
-	};
+	m_vk.swapchain_image_views.clear();
+	for (auto img : m_vk.swapchain_images) {
+		vk::ImageViewCreateInfo iv_ci {};
+		iv_ci.image = img;
+		iv_ci.viewType = vk::ImageViewType::e2D;
+		iv_ci.format = m_vk.swapchain_image_format;
+		iv_ci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+		iv_ci.subresourceRange.levelCount = 1;
+		iv_ci.subresourceRange.layerCount = 1;
+		m_vk.swapchain_image_views.emplace_back(
+		    m_device.createImageViewUnique(iv_ci));
+	}
+
+	vk::SemaphoreCreateInfo semaphore_ci {};
 	m_vk.present_semaphores.resize(m_vk.swapchain_images.size());
 	for (auto &semaphore : m_vk.present_semaphores) {
-		VK_CHECK(m_logger,
-		    vkCreateSemaphore(m_vkb.dev, &semaphore_ci, nullptr, &semaphore));
+		semaphore = m_device.createSemaphoreUnique(semaphore_ci);
 	}
 }
 
@@ -1005,37 +981,37 @@ auto VulkanRenderer::create_draw_image(uint32_t width, uint32_t height) -> void
 {
 	destroy_draw_image();
 
-	auto const flags { VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-		| VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT
-		| VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT };
+	auto const flags { vk::ImageUsageFlagBits::eTransferSrc
+		| vk::ImageUsageFlagBits::eTransferDst
+		| vk::ImageUsageFlagBits::eStorage
+		| vk::ImageUsageFlagBits::eColorAttachment };
 	m_vk.draw_image = create_image(
-	    { width, height, 1 }, VK_FORMAT_R16G16B16A16_SFLOAT, flags);
+	    { width, height, 1 }, vk::Format::eR16G16B16A16Sfloat, flags);
 }
 
 auto VulkanRenderer::create_depth_image(uint32_t width, uint32_t height) -> void
 {
 	destroy_depth_image();
 
-	auto const flags { VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-		| VK_IMAGE_USAGE_TRANSFER_DST_BIT
-		| VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT };
+	auto const flags { vk::ImageUsageFlagBits::eTransferSrc
+		| vk::ImageUsageFlagBits::eTransferDst
+		| vk::ImageUsageFlagBits::eDepthStencilAttachment };
 	m_vk.depth_image
-	    = create_image({ width, height, 1 }, VK_FORMAT_D32_SFLOAT, flags);
+	    = create_image({ width, height, 1 }, vk::Format::eD32Sfloat, flags);
 }
 
 auto VulkanRenderer::destroy_depth_image() -> void
 {
-	if (m_vk.depth_image.image_view != VK_NULL_HANDLE) {
-		vkDestroyImageView(m_vkb.dev, m_vk.depth_image.image_view, nullptr);
-		m_vk.depth_image.image_view = VK_NULL_HANDLE;
-	}
-	if (m_vk.depth_image.image != VK_NULL_HANDLE) {
-		vmaDestroyImage(m_vk.allocator, m_vk.depth_image.image,
+	if (m_vk.depth_image.image) {
+		m_device.destroyImageView(m_vk.depth_image.image_view);
+		m_vk.depth_image.image_view = vk::ImageView {};
+		vmaDestroyImage(m_vk.allocator,
+		    static_cast<VkImage>(m_vk.depth_image.image),
 		    m_vk.depth_image.allocation);
-		m_vk.depth_image.image = VK_NULL_HANDLE;
+		m_vk.depth_image.image = vk::Image {};
 		m_vk.depth_image.allocation = nullptr;
+		m_vk.depth_image.extent = vk::Extent3D { 0, 0, 0 };
 	}
-	m_vk.depth_image.extent = { 0, 0, 0 };
 }
 
 auto VulkanRenderer::update_draw_image_descriptor() -> void
@@ -1043,33 +1019,32 @@ auto VulkanRenderer::update_draw_image_descriptor() -> void
 	DescriptorWriter()
 	    .write_image(0, m_vk.draw_image.image_view, VK_NULL_HANDLE,
 	        VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-	    .update_set(m_vkb.dev, m_vk.draw_image_descriptors);
+	    .update_set(m_vkb.dev.device, m_vk.draw_image_descriptors);
 }
 
 auto VulkanRenderer::destroy_draw_image() -> void
 {
-	if (m_vk.draw_image.image_view != VK_NULL_HANDLE) {
-		vkDestroyImageView(m_vkb.dev, m_vk.draw_image.image_view, nullptr);
-		m_vk.draw_image.image_view = VK_NULL_HANDLE;
-	}
-	if (m_vk.draw_image.image != VK_NULL_HANDLE) {
-		vmaDestroyImage(
-		    m_vk.allocator, m_vk.draw_image.image, m_vk.draw_image.allocation);
-		m_vk.draw_image.image = VK_NULL_HANDLE;
+	if (m_vk.draw_image.image) {
+		m_device.destroyImageView(m_vk.draw_image.image_view);
+		m_vk.draw_image.image_view = vk::ImageView {};
+		vmaDestroyImage(m_vk.allocator,
+		    static_cast<VkImage>(m_vk.draw_image.image),
+		    m_vk.draw_image.allocation);
+		m_vk.draw_image.image = vk::Image {};
 		m_vk.draw_image.allocation = nullptr;
+		m_vk.draw_image.extent = vk::Extent3D { 0, 0, 0 };
 	}
-	m_vk.draw_image.extent = { 0, 0, 0 };
 }
 
 auto VulkanRenderer::recreate_swapchain(uint32_t width, uint32_t height) -> void
 {
-	vkDeviceWaitIdle(m_vkb.dev);
+	m_device.waitIdle();
 
 	if (width == 0 || height == 0) {
 		destroy_swapchain();
 		destroy_draw_image();
 		destroy_depth_image();
-		m_vk.swapchain_extent = { 0, 0 };
+		m_vk.swapchain_extent = vk::Extent2D { 0, 0 };
 		return;
 	}
 
@@ -1085,26 +1060,21 @@ auto VulkanRenderer::recreate_swapchain(uint32_t width, uint32_t height) -> void
 
 auto VulkanRenderer::destroy_swapchain() -> void
 {
-	if (m_vk.swapchain == VK_NULL_HANDLE)
+	if (!m_vk.swapchain)
 		return;
 
-	for (auto const semaphore : m_vk.present_semaphores) {
-		vkDestroySemaphore(m_vkb.dev, semaphore, nullptr);
-	}
-	for (auto const &iv : m_vk.swapchain_image_views) {
-		vkDestroyImageView(m_vkb.dev, iv, nullptr);
-	}
-	vkDestroySwapchainKHR(m_vkb.dev, m_vk.swapchain, nullptr);
+	m_vk.present_semaphores.clear();
+	m_device.destroySwapchainKHR(m_vk.swapchain);
 
-	m_vk.swapchain = VK_NULL_HANDLE;
+	m_vk.swapchain = vk::SwapchainKHR {};
 	m_vk.swapchain_image_views.clear();
 	m_vk.swapchain_images.clear();
 	m_vk.present_semaphores.clear();
-	m_vk.swapchain_extent = { 0, 0 };
+	m_vk.swapchain_extent = vk::Extent2D { 0, 0 };
 }
 
-auto VulkanRenderer::create_image(VkExtent3D size, VkFormat format,
-    VkImageUsageFlags flags, bool mipmapped) -> AllocatedImage
+auto VulkanRenderer::create_image(vk::Extent3D size, vk::Format format,
+    vk::ImageUsageFlags flags, bool mipmapped) -> AllocatedImage
 {
 	AllocatedImage new_image;
 	new_image.format = format;
@@ -1123,31 +1093,33 @@ auto VulkanRenderer::create_image(VkExtent3D size, VkFormat format,
 	    = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	VK_CHECK(m_logger,
-	    vmaCreateImage(m_vk.allocator, &img_ci, &alloc_ci, &new_image.image,
+	    vmaCreateImage(m_vk.allocator,
+	        reinterpret_cast<VkImageCreateInfo const *>(&img_ci), &alloc_ci,
+	        reinterpret_cast<VkImage *>(&new_image.image),
 	        &new_image.allocation, nullptr));
 
-	VkImageAspectFlags aspect_flag { VK_IMAGE_ASPECT_COLOR_BIT };
-	if (format == VK_FORMAT_D32_SFLOAT) {
-		aspect_flag = VK_IMAGE_ASPECT_DEPTH_BIT;
+	vk::ImageAspectFlags aspect_flag { vk::ImageAspectFlagBits::eColor };
+	if (format == vk::Format::eD32Sfloat) {
+		aspect_flag = vk::ImageAspectFlagBits::eDepth;
 	}
 
 	auto const view_ci { vkinit::imageview_create_info(
 		format, new_image.image, aspect_flag) };
-	VK_CHECK(m_logger,
-	    vkCreateImageView(m_vkb.dev, &view_ci, nullptr, &new_image.image_view));
+	new_image.image_view = m_device.createImageView(view_ci);
 
 	return new_image;
 }
 
-auto VulkanRenderer::create_image(void const *data, VkExtent3D size,
-    VkFormat format, VkImageUsageFlags flags, bool mipmapped) -> AllocatedImage
+auto VulkanRenderer::create_image(void const *data, vk::Extent3D size,
+    vk::Format format, vk::ImageUsageFlags flags, bool mipmapped)
+    -> AllocatedImage
 {
 	size_t data_size {
 		static_cast<uint32_t>(size.depth) * static_cast<uint32_t>(size.width)
 		    * static_cast<uint32_t>(size.height) * 4,
 	};
 	auto const upload_buffer {
-		create_buffer(data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		create_buffer(data_size, vk::BufferUsageFlagBits::eTransferSrc,
 		    VMA_MEMORY_USAGE_CPU_TO_GPU),
 	};
 
@@ -1167,32 +1139,29 @@ auto VulkanRenderer::create_image(void const *data, VkExtent3D size,
 
 	auto const new_image {
 		create_image(size, format,
-		    flags | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-		        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		    flags | vk::ImageUsageFlagBits::eTransferDst
+		        | vk::ImageUsageFlagBits::eTransferSrc,
 		    mipmapped),
 	};
 
-	immediate_submit([&](VkCommandBuffer cmd) {
+	immediate_submit([&](vk::CommandBuffer cmd) {
 		vkutil::transition_image(cmd, new_image.image,
-		    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		    vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
 
-		VkBufferImageCopy copy_region {};
-		copy_region.bufferOffset = 0;
-		copy_region.bufferRowLength = 0;
-		copy_region.bufferImageHeight = 0;
-
-		copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		vk::BufferImageCopy copy_region {};
+		copy_region.imageSubresource.aspectMask
+		    = vk::ImageAspectFlagBits::eColor;
 		copy_region.imageSubresource.mipLevel = 0;
 		copy_region.imageSubresource.baseArrayLayer = 0;
 		copy_region.imageSubresource.layerCount = 1;
 		copy_region.imageExtent = size;
 
-		vkCmdCopyBufferToImage(cmd, upload_buffer.buffer, new_image.image,
-		    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+		cmd.copyBufferToImage(upload_buffer.buffer, new_image.image,
+		    vk::ImageLayout::eTransferDstOptimal, copy_region);
 
 		vkutil::transition_image(cmd, new_image.image,
-		    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		    vk::ImageLayout::eTransferDstOptimal,
+		    vk::ImageLayout::eShaderReadOnlyOptimal);
 	});
 
 	if (mapped_here) {
@@ -1205,20 +1174,20 @@ auto VulkanRenderer::create_image(void const *data, VkExtent3D size,
 
 auto VulkanRenderer::destroy_image(AllocatedImage const &img) -> void
 {
-	vkDestroyImageView(m_vkb.dev, img.image_view, nullptr);
-	vmaDestroyImage(m_vk.allocator, img.image, img.allocation);
+	if (img.image_view) {
+		m_device.destroyImageView(img.image_view);
+	}
+	vmaDestroyImage(
+	    m_vk.allocator, static_cast<VkImage>(img.image), img.allocation);
 }
 
-auto VulkanRenderer::create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
-    VmaMemoryUsage memory_usage) -> AllocatedBuffer
+auto VulkanRenderer::create_buffer(size_t alloc_size,
+    vk::BufferUsageFlags usage, VmaMemoryUsage memory_usage) -> AllocatedBuffer
 {
-	VkBufferCreateInfo buffer_ci {};
-	buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	buffer_ci.pNext = nullptr;
-	buffer_ci.flags = 0;
+	vk::BufferCreateInfo buffer_ci {};
 	buffer_ci.size = alloc_size;
 	buffer_ci.usage = usage;
-	buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	buffer_ci.sharingMode = vk::SharingMode::eExclusive;
 
 	VmaAllocationCreateInfo alloc_ci {};
 	alloc_ci.usage = memory_usage;
@@ -1230,8 +1199,10 @@ auto VulkanRenderer::create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
 
 	AllocatedBuffer buffer;
 	VK_CHECK(m_logger,
-	    vmaCreateBuffer(m_vk.allocator, &buffer_ci, &alloc_ci, &buffer.buffer,
-	        &buffer.allocation, &buffer.info));
+	    vmaCreateBuffer(m_vk.allocator,
+	        reinterpret_cast<VkBufferCreateInfo const *>(&buffer_ci), &alloc_ci,
+	        reinterpret_cast<VkBuffer *>(&buffer.buffer), &buffer.allocation,
+	        &buffer.info));
 
 	return buffer;
 }
@@ -1249,24 +1220,25 @@ auto VulkanRenderer::upload_mesh(
 
 	GPUMeshBuffers new_surface;
 	new_surface.vertex_buffer = create_buffer(vertex_buffer_size,
-	    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-	        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	    vk::BufferUsageFlagBits::eVertexBuffer
+	        | vk::BufferUsageFlagBits::eTransferDst
+	        | vk::BufferUsageFlagBits::eShaderDeviceAddress,
 	    VMA_MEMORY_USAGE_GPU_ONLY);
 
-	VkBufferDeviceAddressInfo device_address_info {};
-	device_address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	vk::BufferDeviceAddressInfo device_address_info {};
 	device_address_info.buffer = new_surface.vertex_buffer.buffer;
 
 	new_surface.vertex_buffer_address
-	    = vkGetBufferDeviceAddress(m_vkb.dev, &device_address_info);
+	    = m_device.getBufferAddress(device_address_info);
 
 	new_surface.index_buffer = create_buffer(index_buffer_size,
-	    VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-	        | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	    vk::BufferUsageFlagBits::eIndexBuffer
+	        | vk::BufferUsageFlagBits::eTransferDst
+	        | vk::BufferUsageFlagBits::eShaderDeviceAddress,
 	    VMA_MEMORY_USAGE_GPU_ONLY);
 
 	auto staging { create_buffer(vertex_buffer_size + index_buffer_size,
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY) };
+		vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY) };
 
 	VmaAllocationInfo info {};
 	vmaGetAllocationInfo(m_vk.allocator, staging.allocation, &info);
@@ -1284,22 +1256,22 @@ auto VulkanRenderer::upload_mesh(
 	           reinterpret_cast<size_t>(data) + vertex_buffer_size),
 	    indices.data(), index_buffer_size);
 
-	immediate_submit([&](VkCommandBuffer cmd) {
-		VkBufferCopy vertex_copy {};
+	immediate_submit([&](vk::CommandBuffer cmd) {
+		vk::BufferCopy vertex_copy {};
 		vertex_copy.dstOffset = 0;
 		vertex_copy.srcOffset = 0;
 		vertex_copy.size = vertex_buffer_size;
 
-		vkCmdCopyBuffer(cmd, staging.buffer, new_surface.vertex_buffer.buffer,
-		    1, &vertex_copy);
+		cmd.copyBuffer(
+		    staging.buffer, new_surface.vertex_buffer.buffer, vertex_copy);
 
-		VkBufferCopy index_copy {};
+		vk::BufferCopy index_copy {};
 		index_copy.dstOffset = 0;
 		index_copy.srcOffset = vertex_buffer_size;
 		index_copy.size = index_buffer_size;
 
-		vkCmdCopyBuffer(cmd, staging.buffer, new_surface.index_buffer.buffer, 1,
-		    &index_copy);
+		cmd.copyBuffer(
+		    staging.buffer, new_surface.index_buffer.buffer, index_copy);
 	});
 
 	if (mapped_here) {

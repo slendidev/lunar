@@ -7,7 +7,7 @@
 #include <VkBootstrap.h>
 #include <smath.hpp>
 #include <vk_mem_alloc.h>
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.hpp>
 
 #include "DeletionQueue.h"
 #include "DescriptorAllocator.h"
@@ -19,7 +19,7 @@ namespace Lunar {
 
 struct GPUDrawPushConstants {
 	smath::Mat4 world_matrix;
-	VkDeviceAddress vertex_buffer;
+	vk::DeviceAddress vertex_buffer;
 };
 
 constexpr unsigned FRAME_OVERLAP = 2;
@@ -31,7 +31,7 @@ struct VulkanRenderer {
 	auto render() -> void;
 	auto resize(uint32_t width, uint32_t height) -> void;
 
-	auto immediate_submit(std::function<void(VkCommandBuffer cmd)> &&function)
+	auto immediate_submit(std::function<void(vk::CommandBuffer cmd)> &&function)
 	    -> void;
 	auto upload_mesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
 	    -> GPUMeshBuffers;
@@ -51,9 +51,10 @@ private:
 	auto imgui_init() -> void;
 	auto default_data_init() -> void;
 
-	auto draw_background(VkCommandBuffer cmd) -> void;
-	auto draw_geometry(VkCommandBuffer cmd) -> void;
-	auto draw_imgui(VkCommandBuffer cmd, VkImageView target_image_view) -> void;
+	auto draw_background(vk::CommandBuffer cmd) -> void;
+	auto draw_geometry(vk::CommandBuffer cmd) -> void;
+	auto draw_imgui(vk::CommandBuffer cmd, vk::ImageView target_image_view)
+	    -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
 	auto create_draw_image(uint32_t width, uint32_t height) -> void;
@@ -63,15 +64,19 @@ private:
 	auto destroy_depth_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
-	auto create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags flags,
-	    bool mipmapped = false) -> AllocatedImage;
-	auto create_image(void const *data, VkExtent3D size, VkFormat format,
-	    VkImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
+	auto create_image(vk::Extent3D size, vk::Format format,
+	    vk::ImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
+	auto create_image(void const *data, vk::Extent3D size, vk::Format format,
+	    vk::ImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
 	auto destroy_image(AllocatedImage const &img) -> void;
 
-	auto create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
+	auto create_buffer(size_t alloc_size, vk::BufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
 	auto destroy_buffer(AllocatedBuffer const &buffer) -> void;
+
+	vk::Instance m_instance {};
+	vk::PhysicalDevice m_physical_device {};
+	vk::Device m_device {};
 
 	struct {
 		vkb::Instance instance;
@@ -86,52 +91,52 @@ private:
 			return frames.at(frame_number % frames.size());
 		}
 
-		VkSwapchainKHR swapchain { VK_NULL_HANDLE };
-		VkSurfaceKHR surface { nullptr };
-		VkFormat swapchain_image_format;
+		vk::SwapchainKHR swapchain {};
+		vk::SurfaceKHR surface {};
+		vk::Format swapchain_image_format {};
 
 		uint32_t graphics_queue_family { 0 };
-		VkQueue graphics_queue { nullptr };
+		vk::Queue graphics_queue {};
 
-		std::vector<VkImage> swapchain_images;
-		std::vector<VkImageView> swapchain_image_views;
-		std::vector<VkSemaphore> present_semaphores;
-		VkExtent2D swapchain_extent;
+		std::vector<vk::Image> swapchain_images;
+		std::vector<vk::UniqueImageView> swapchain_image_views;
+		std::vector<vk::UniqueSemaphore> present_semaphores;
+		vk::Extent2D swapchain_extent;
 
 		std::array<FrameData, FRAME_OVERLAP> frames;
 		AllocatedImage draw_image {};
 		AllocatedImage depth_image {};
-		VkExtent2D draw_extent {};
+		vk::Extent2D draw_extent {};
 
 		VmaAllocator allocator;
 		DescriptorAllocator descriptor_allocator;
 
-		VkDescriptorSet draw_image_descriptors;
-		VkDescriptorSetLayout draw_image_descriptor_layout;
+		VkDescriptorSet draw_image_descriptors {};
+		vk::DescriptorSetLayout draw_image_descriptor_layout {};
 
 		GPUSceneData scene_data {};
-		VkDescriptorSetLayout gpu_scene_data_descriptor_layout;
+		vk::DescriptorSetLayout gpu_scene_data_descriptor_layout {};
 
-		VkDescriptorSetLayout single_image_descriptor_layout;
+		vk::DescriptorSetLayout single_image_descriptor_layout {};
 
-		VkPipeline gradient_pipeline {};
-		VkPipelineLayout gradient_pipeline_layout {};
+		vk::UniquePipeline gradient_pipeline;
+		vk::UniquePipelineLayout gradient_pipeline_layout;
 
-		VkPipeline triangle_pipeline {};
-		VkPipelineLayout triangle_pipeline_layout {};
+		vk::Pipeline triangle_pipeline {};
+		vk::UniquePipelineLayout triangle_pipeline_layout;
 
-		VkPipeline mesh_pipeline {};
-		VkPipelineLayout mesh_pipeline_layout {};
+		vk::Pipeline mesh_pipeline {};
+		vk::UniquePipelineLayout mesh_pipeline_layout;
 
 		GPUMeshBuffers rectangle;
 
-		VkDescriptorPool imgui_descriptor_pool { VK_NULL_HANDLE };
+		vk::UniqueDescriptorPool imgui_descriptor_pool;
 
 		DeletionQueue deletion_queue;
 
-		VkFence imm_fence {};
-		VkCommandBuffer imm_command_buffer {};
-		VkCommandPool imm_command_pool {};
+		vk::UniqueFence imm_fence;
+		vk::UniqueCommandBuffer imm_command_buffer;
+		vk::UniqueCommandPool imm_command_pool;
 
 		uint64_t frame_number { 0 };
 
@@ -142,8 +147,8 @@ private:
 		AllocatedImage gray_image {};
 		AllocatedImage error_image {};
 
-		VkSampler default_sampler_linear;
-		VkSampler default_sampler_nearest;
+		vk::UniqueSampler default_sampler_linear;
+		vk::UniqueSampler default_sampler_nearest;
 	} m_vk;
 
 	SDL_Window *m_window { nullptr };

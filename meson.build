@@ -71,6 +71,15 @@ add_project_arguments(
 		'-Wno-switch-enum',
 		'-Wno-sign-conversion',
 		'-Wno-documentation',
+		'-Wno-float-equal',
+		'-Wno-cast-function-type-strict',
+		'-Wno-exit-time-destructors',
+		'-Wno-zero-as-null-pointer-constant',
+		'-Wno-unused-macros',
+		'-Wno-suggest-override',
+		'-Wno-macro-redefined',
+		'-DVULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE',
+		'-DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1',
 	],
 	language : 'cpp'
 )

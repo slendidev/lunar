@@ -2,7 +2,7 @@
 
 #include <smath.hpp>
 #include <vk_mem_alloc.h>
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.hpp>
 
 #include "DeletionQueue.h"
 #include "DescriptorAllocatorGrowable.h"
@@ -10,24 +10,24 @@
 namespace Lunar {
 
 struct AllocatedImage {
-	VkImage image;
-	VkImageView image_view;
+	vk::Image image;
+	vk::ImageView image_view;
 	VmaAllocation allocation;
-	VkExtent3D extent;
-	VkFormat format;
+	vk::Extent3D extent;
+	vk::Format format;
 };
 
 struct AllocatedBuffer {
-	VkBuffer buffer;
+	vk::Buffer buffer;
 	VmaAllocation allocation;
 	VmaAllocationInfo info;
 };
 
 struct FrameData {
-	VkCommandPool command_pool;
-	VkCommandBuffer main_command_buffer;
-	VkSemaphore swapchain_semaphore;
-	VkFence render_fence;
+	vk::UniqueCommandPool command_pool;
+	vk::UniqueCommandBuffer main_command_buffer;
+	vk::UniqueSemaphore swapchain_semaphore;
+	vk::UniqueFence render_fence;
 
 	DeletionQueue deletion_queue;
 	DescriptorAllocatorGrowable frame_descriptors;
@@ -43,7 +43,7 @@ struct Vertex {
 
 struct GPUMeshBuffers {
 	AllocatedBuffer index_buffer, vertex_buffer;
-	VkDeviceAddress vertex_buffer_address;
+	vk::DeviceAddress vertex_buffer_address;
 };
 
 struct GPUSceneData {

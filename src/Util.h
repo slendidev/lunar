@@ -3,7 +3,7 @@
 #include <span>
 
 #include <vulkan/vk_enum_string_helper.h>
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan.hpp>
 
 template<typename F> struct privDefer {
 	F f;
@@ -29,46 +29,49 @@ template<typename F> privDefer<F> defer_func(F f) { return privDefer<F>(f); }
 
 #define VK_CHECK(logger, x) \
 	do { \
-		VkResult err { x }; \
-		if (err) { \
-			(logger).err("Detected Vulkan error: {}", string_VkResult(err)); \
+		auto err { x }; \
+		auto result = vk::Result(err); \
+		if (result != vk::Result::eSuccess) { \
+			(logger).err("Detected Vulkan error: {}", vk::to_string(result)); \
 			throw std::runtime_error("Vulkan error"); \
 		} \
 	} while (0)
 
 namespace vkutil {
 
-auto transition_image(VkCommandBuffer cmd, VkImage image,
-    VkImageLayout current_layout, VkImageLayout new_layout) -> void;
-auto copy_image_to_image(VkCommandBuffer cmd, VkImage source,
-    VkImage destination, VkExtent2D src_size, VkExtent2D dst_size) -> void;
-auto load_shader_module(std::span<uint8_t> spirv_data, VkDevice device,
-    VkShaderModule *out_shader_module) -> bool;
+auto transition_image(vk::CommandBuffer cmd, vk::Image image,
+    vk::ImageLayout current_layout, vk::ImageLayout new_layout) -> void;
+auto copy_image_to_image(vk::CommandBuffer cmd, vk::Image source,
+    vk::Image destination, vk::Extent2D src_size, vk::Extent2D dst_size)
+    -> void;
+auto load_shader_module(std::span<uint8_t> spirv_data, vk::Device device)
+    -> vk::UniqueShaderModule;
 
 } // namespace vkutil
 
 namespace vkinit {
 
-auto image_create_info(VkFormat format, VkImageUsageFlags usage_flags,
-    VkExtent3D extent) -> VkImageCreateInfo;
-auto imageview_create_info(VkFormat format, VkImage image,
-    VkImageAspectFlags aspect_flags) -> VkImageViewCreateInfo;
-auto command_buffer_submit_info(VkCommandBuffer cmd)
-    -> VkCommandBufferSubmitInfo;
-auto semaphore_submit_info(VkPipelineStageFlags2 stage_mask,
-    VkSemaphore semaphore) -> VkSemaphoreSubmitInfo;
-auto submit_info2(VkCommandBufferSubmitInfo *cmd_info,
-    VkSemaphoreSubmitInfo *wait_semaphore_info,
-    VkSemaphoreSubmitInfo *signal_semaphore_info) -> VkSubmitInfo2;
-auto attachment_info(VkImageView view, VkClearValue *clear,
-    VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-    -> VkRenderingAttachmentInfo;
-auto pipeline_shader_stage(VkShaderStageFlagBits stage, VkShaderModule module)
-    -> VkPipelineShaderStageCreateInfo;
-auto render_info(VkExtent2D extent, VkRenderingAttachmentInfo const *color_att,
-    VkRenderingAttachmentInfo const *depth_att) -> VkRenderingInfo;
-auto depth_attachment_info(VkImageView view,
-    VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL)
-    -> VkRenderingAttachmentInfo;
+auto image_create_info(vk::Format format, vk::ImageUsageFlags usage_flags,
+    vk::Extent3D extent) -> vk::ImageCreateInfo;
+auto imageview_create_info(vk::Format format, vk::Image image,
+    vk::ImageAspectFlags aspect_flags) -> vk::ImageViewCreateInfo;
+auto command_buffer_submit_info(vk::CommandBuffer cmd)
+    -> vk::CommandBufferSubmitInfo;
+auto semaphore_submit_info(vk::PipelineStageFlags2 stage_mask,
+    vk::Semaphore semaphore) -> vk::SemaphoreSubmitInfo;
+auto submit_info2(vk::CommandBufferSubmitInfo *cmd_info,
+    vk::SemaphoreSubmitInfo *wait_semaphore_info,
+    vk::SemaphoreSubmitInfo *signal_semaphore_info) -> vk::SubmitInfo2;
+auto attachment_info(vk::ImageView view, vk::ClearValue *clear,
+    vk::ImageLayout layout = vk::ImageLayout::eColorAttachmentOptimal)
+    -> vk::RenderingAttachmentInfo;
+auto pipeline_shader_stage(vk::ShaderStageFlagBits stage,
+    vk::ShaderModule module) -> vk::PipelineShaderStageCreateInfo;
+auto render_info(vk::Extent2D extent,
+    vk::RenderingAttachmentInfo const *color_att,
+    vk::RenderingAttachmentInfo const *depth_att) -> vk::RenderingInfo;
+auto depth_attachment_info(vk::ImageView view,
+    vk::ImageLayout layout = vk::ImageLayout::eDepthAttachmentOptimal)
+    -> vk::RenderingAttachmentInfo;
 
 } // namespace vkinit
