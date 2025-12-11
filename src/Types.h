@@ -5,6 +5,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "DeletionQueue.h"
+#include "DescriptorAllocatorGrowable.h"
 
 namespace Lunar {
 
@@ -29,6 +30,7 @@ struct FrameData {
 	VkFence render_fence;
 
 	DeletionQueue deletion_queue;
+	DescriptorAllocatorGrowable frame_descriptors;
 };
 
 struct Vertex {

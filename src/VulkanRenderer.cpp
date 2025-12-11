@@ -14,6 +14,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "DescriptorLayoutBuilder.h"
+#include "DescriptorWriter.h"
 #include "GraphicsPipelineBuilder.h"
 #include "Util.h"
 
@@ -940,20 +941,10 @@ auto VulkanRenderer::destroy_depth_image() -> void
 
 auto VulkanRenderer::update_draw_image_descriptor() -> void
 {
-	VkDescriptorImageInfo img_info {};
-	img_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	img_info.imageView = m_vk.draw_image.image_view;
-
-	VkWriteDescriptorSet draw_img_write {};
-	draw_img_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	draw_img_write.pNext = nullptr;
-	draw_img_write.dstBinding = 0;
-	draw_img_write.dstSet = m_vk.draw_image_descriptors;
-	draw_img_write.descriptorCount = 1;
-	draw_img_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	draw_img_write.pImageInfo = &img_info;
-
-	vkUpdateDescriptorSets(m_vkb.dev, 1, &draw_img_write, 0, nullptr);
+	DescriptorWriter()
+	    .write_image(0, m_vk.draw_image.image_view, VK_NULL_HANDLE,
+	        VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+	    .update_set(m_vkb.dev, m_vk.draw_image_descriptors);
 }
 
 auto VulkanRenderer::destroy_draw_image() -> void
