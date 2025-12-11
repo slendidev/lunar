@@ -23,6 +23,8 @@ vulkan_dep = dependency('vulkan')
 openxr_dep = dependency('openxr')
 zlib_dep = dependency('zlib')
 sdl3_dep = dependency('sdl3')
+libinput_dep = dependency('libinput')
+libudev_dep = dependency('libudev')
 imgui_src = files(
 	'thirdparty/imgui/imgui.cpp',
 	'thirdparty/imgui/imgui_draw.cpp',
@@ -140,6 +142,8 @@ exe = executable('vr-compositor',
 		zlib_dep,
 		sdl3_dep,
 		fastgltf_dep,
+		libinput_dep,
+		libudev_dep,
 	],
 	cpp_args: [
 		'--embed-dir=' + join_paths(meson.project_build_root(), 'shaders')

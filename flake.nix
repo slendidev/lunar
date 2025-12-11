@@ -34,6 +34,7 @@
           wayland
           zlib
           sdl3
+          libinput
         ];
       in
       {
