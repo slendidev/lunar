@@ -63,6 +63,11 @@ private:
 	auto destroy_depth_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
+	auto create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags flags,
+	    bool mipmapped = false) -> AllocatedImage;
+	auto create_image(void const *data, VkExtent3D size, VkFormat format,
+	    VkImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
+	auto destroy_image(AllocatedImage const &img) -> void;
 
 	auto create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
@@ -129,6 +134,14 @@ private:
 		uint64_t frame_number { 0 };
 
 		std::vector<std::shared_ptr<Mesh>> test_meshes;
+
+		AllocatedImage white_image {};
+		AllocatedImage black_image {};
+		AllocatedImage gray_image {};
+		AllocatedImage error_image {};
+
+		VkSampler default_sampler_linear;
+		VkSampler default_sampler_nearest;
 	} m_vk;
 
 	SDL_Window *m_window { nullptr };
