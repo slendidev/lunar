@@ -1132,16 +1132,13 @@ auto VulkanRenderer::create_image(void const *data, VkExtent3D size,
 	vmaGetAllocationInfo(m_vk.allocator, upload_buffer.allocation, &info);
 
 	void *mapped_data { reinterpret_cast<GPUSceneData *>(info.pMappedData) };
+	bool mapped_here { false };
 	if (!mapped_data) {
 		VkResult res = vmaMapMemory(
 		    m_vk.allocator, upload_buffer.allocation, (void **)&mapped_data);
 		assert(res == VK_SUCCESS);
+		mapped_here = true;
 	}
-	defer({
-		if (info.pMappedData == nullptr) {
-			vmaUnmapMemory(m_vk.allocator, upload_buffer.allocation);
-		}
-	});
 
 	memcpy(mapped_data, data, data_size);
 
@@ -1175,6 +1172,9 @@ auto VulkanRenderer::create_image(void const *data, VkExtent3D size,
 		    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	});
 
+	if (mapped_here) {
+		vmaUnmapMemory(m_vk.allocator, upload_buffer.allocation);
+	}
 	destroy_buffer(upload_buffer);
 
 	return new_image;
@@ -1249,15 +1249,12 @@ auto VulkanRenderer::upload_mesh(
 	vmaGetAllocationInfo(m_vk.allocator, staging.allocation, &info);
 
 	void *data = info.pMappedData;
+	bool mapped_here { false };
 	if (!data) {
 		VkResult res = vmaMapMemory(m_vk.allocator, staging.allocation, &data);
 		assert(res == VK_SUCCESS);
+		mapped_here = true;
 	}
-	defer({
-		if (info.pMappedData == nullptr) {
-			vmaUnmapMemory(m_vk.allocator, staging.allocation);
-		}
-	});
 
 	memcpy(data, vertices.data(), vertex_buffer_size);
 	memcpy(reinterpret_cast<void *>(
@@ -1282,6 +1279,9 @@ auto VulkanRenderer::upload_mesh(
 		    &index_copy);
 	});
 
+	if (mapped_here) {
+		vmaUnmapMemory(m_vk.allocator, staging.allocation);
+	}
 	destroy_buffer(staging);
 
 	return new_surface;
