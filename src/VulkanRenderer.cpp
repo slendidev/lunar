@@ -94,6 +94,9 @@ auto VulkanRenderer::immediate_submit(
 
 	VK_CHECK(m_logger,
 	    vkWaitForFences(m_vkb.dev, 1, &m_vk.imm_fence, true, 9999999999));
+
+	m_vk.get_current_frame().deletion_queue.flush();
+	m_vk.get_current_frame().frame_descriptors.clear_pools(m_vkb.dev);
 }
 
 auto VulkanRenderer::vk_init() -> void
@@ -327,6 +330,28 @@ auto VulkanRenderer::descriptors_init() -> void
 		vkDestroyDescriptorSetLayout(
 		    m_vkb.dev, m_vk.draw_image_descriptor_layout, nullptr);
 	});
+
+	for (unsigned int i = 0; i < FRAME_OVERLAP; i++) {
+		std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> frame_sizes = {
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 },
+		};
+
+		m_vk.frames[i].frame_descriptors = DescriptorAllocatorGrowable {};
+		m_vk.frames[i].frame_descriptors.init(m_vkb.dev, 1000, frame_sizes);
+
+		m_vk.deletion_queue.emplace([&, i]() {
+			m_vk.frames[i].frame_descriptors.destroy_pools(m_vkb.dev);
+		});
+	}
+
+	m_vk.gpu_scene_data_descriptor_layout
+	    = DescriptorLayoutBuilder()
+	          .add_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+	          .build(m_logger, m_vkb.dev,
+	              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 }
 
 auto VulkanRenderer::pipelines_init() -> void
@@ -737,6 +762,40 @@ auto VulkanRenderer::draw_background(VkCommandBuffer cmd) -> void
 
 auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 {
+	auto gpu_scene_data_buffer { create_buffer(sizeof(GPUSceneData),
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU) };
+	m_vk.get_current_frame().deletion_queue.emplace(
+	    [=, this]() { destroy_buffer(gpu_scene_data_buffer); });
+
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(
+	    m_vk.allocator, gpu_scene_data_buffer.allocation, &info);
+
+	GPUSceneData *scene_uniform_data
+	    = reinterpret_cast<GPUSceneData *>(info.pMappedData);
+	if (!scene_uniform_data) {
+		VkResult res = vmaMapMemory(m_vk.allocator,
+		    gpu_scene_data_buffer.allocation, (void **)&scene_uniform_data);
+		assert(res == VK_SUCCESS);
+	}
+	defer({
+		if (info.pMappedData == nullptr) {
+			vmaUnmapMemory(m_vk.allocator, gpu_scene_data_buffer.allocation);
+		}
+	});
+
+	*scene_uniform_data = m_vk.scene_data;
+
+	auto const global_desc {
+		m_vk.get_current_frame().frame_descriptors.allocate(
+		    m_logger, m_vkb.dev, m_vk.gpu_scene_data_descriptor_layout)
+	};
+
+	DescriptorWriter writer;
+	writer.write_buffer(0, gpu_scene_data_buffer.buffer, sizeof(GPUSceneData),
+	    0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+	writer.update_set(m_vkb.dev, global_desc);
+
 	auto color_att { vkinit::attachment_info(m_vk.draw_image.image_view,
 		nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) };
 	auto depth_att { vkinit::depth_attachment_info(m_vk.depth_image.image_view,
@@ -775,8 +834,6 @@ auto VulkanRenderer::draw_geometry(VkCommandBuffer cmd) -> void
 	scissor.offset.y = 0;
 	scissor.extent = m_vk.draw_extent;
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-	// vkCmdDraw(cmd, 3, 1, 0, 0);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vk.mesh_pipeline);
 
@@ -1031,7 +1088,7 @@ auto VulkanRenderer::create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
 	return buffer;
 }
 
-auto VulkanRenderer::destroy_buffer(AllocatedBuffer &buffer) -> void
+auto VulkanRenderer::destroy_buffer(AllocatedBuffer const &buffer) -> void
 {
 	vmaDestroyBuffer(m_vk.allocator, buffer.buffer, buffer.allocation);
 }

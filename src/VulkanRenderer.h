@@ -66,7 +66,7 @@ private:
 
 	auto create_buffer(size_t alloc_size, VkBufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
-	auto destroy_buffer(AllocatedBuffer &buffer) -> void;
+	auto destroy_buffer(AllocatedBuffer const &buffer) -> void;
 
 	struct {
 		vkb::Instance instance;
@@ -103,6 +103,9 @@ private:
 
 		VkDescriptorSet draw_image_descriptors;
 		VkDescriptorSetLayout draw_image_descriptor_layout;
+
+		GPUSceneData scene_data {};
+		VkDescriptorSetLayout gpu_scene_data_descriptor_layout;
 
 		VkPipeline gradient_pipeline {};
 		VkPipelineLayout gradient_pipeline_layout {};

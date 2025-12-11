@@ -46,4 +46,13 @@ struct GPUMeshBuffers {
 	VkDeviceAddress vertex_buffer_address;
 };
 
+struct GPUSceneData {
+	smath::Mat4 view;
+	smath::Mat4 proj;
+	smath::Mat4 viewport;
+	smath::Vec4 ambient_color;
+	smath::Vec4 sunlight_direction;
+	smath::Vec4 sunlight_color;
+};
+
 } // namespace Lunar
