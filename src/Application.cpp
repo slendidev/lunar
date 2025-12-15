@@ -23,6 +23,8 @@
 #include <libudev.h>
 #include <linux/input-event-codes.h>
 
+#include <smath.hpp>
+
 #include "Util.h"
 #include "VulkanRenderer.h"
 
@@ -308,7 +310,60 @@ auto Application::run() -> void
 
 		ImGui::Render();
 
-		m_renderer->render();
+		m_renderer->render([&](VulkanRenderer::GL &gl) {
+			auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
+				smath::Vec3 { 0.0f, 0.0f, 0.0f },
+				smath::Vec3 { 0.0f, 1.0f, 0.0f }, false) };
+			auto const draw_extent = m_renderer->draw_extent();
+			auto const aspect = draw_extent.height == 0
+			    ? 1.0f
+			    : static_cast<float>(draw_extent.width)
+			        / static_cast<float>(draw_extent.height);
+			auto projection { smath::matrix_perspective(
+				smath::deg(70.0f), aspect, 0.1f, 10000.0f) };
+			projection[1][1] *= -1;
+			auto view_projection { projection * view };
+
+			auto rect_model { smath::scale(
+				smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
+				smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
+
+			gl.set_transform(view_projection * rect_model);
+
+			gl.set_texture();
+			auto const &meshes { m_renderer->test_meshes() };
+			if (meshes.size() > 2 && !meshes[2]->surfaces.empty()) {
+				auto const &surface = meshes[2]->surfaces[0];
+				gl.draw_mesh(meshes[2]->mesh_buffers, view_projection,
+				    surface.count, surface.start_index);
+			}
+
+			gl.set_texture(&m_renderer->white_texture());
+
+			gl.begin(VulkanRenderer::GL::GeometryKind::Quads);
+
+			gl.color(smath::Vec3 { 0.0f, 0.0f, 0.0f });
+			gl.uv(smath::Vec2 { 1.0f, 1.0f });
+			gl.vert(smath::Vec3 { 0.5f, -0.5f, 0.0f });
+
+			gl.color(smath::Vec3 { 0.5f, 0.5f, 0.5f });
+			gl.uv(smath::Vec2 { 1.0f, 0.0f });
+			gl.vert(smath::Vec3 { 0.5f, 0.5f, 0.0f });
+
+			gl.color(smath::Vec3 { 1.0f, 0.0f, 0.0f });
+			gl.uv(smath::Vec2 { 0.0f, 1.0f });
+			gl.vert(smath::Vec3 { -0.5f, -0.5f, 0.0f });
+
+			gl.color(smath::Vec3 { 0.0f, 1.0f, 0.0f });
+			gl.uv(smath::Vec2 { 0.0f, 0.0f });
+			gl.vert(smath::Vec3 { -0.5f, 0.5f, 0.0f });
+
+			gl.end();
+
+			gl.draw_rectangle({ -0.5f, 0.5f }, { 0.5f, 0.5f });
+			gl.draw_rectangle(
+			    { 0, 0.5f }, { 0.5f, 0.5f }, { Colors::TEAL, 1.0f });
+		});
 	}
 }
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <functional>
+#include <optional>
 #include <vector>
 
 #include <SDL3/SDL_video.h>
@@ -9,6 +11,7 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.hpp>
 
+#include "Colors.h"
 #include "DeletionQueue.h"
 #include "DescriptorAllocator.h"
 #include "Loader.h"
@@ -26,18 +29,120 @@ struct GPUDrawPushConstants {
 constexpr unsigned FRAME_OVERLAP = 2;
 
 struct VulkanRenderer {
+	struct GL {
+		enum class GeometryKind {
+			Triangles,
+			TriangleStrip,
+			TriangleFan,
+			Quads
+		};
+
+		explicit GL(VulkanRenderer &renderer);
+
+		auto begin_drawing(vk::CommandBuffer cmd, AllocatedImage &color_target,
+		    AllocatedImage *depth_target = nullptr) -> void;
+		auto end_drawing() -> void;
+
+		auto begin(GeometryKind kind) -> void;
+		template<size_t N>
+		auto vert(smath::Vec<N, float> const &position) -> void
+		{
+			static_assert(N == 2 || N == 3 || N == 4,
+			    "Position must be a 2D, 3D, or 4D vec");
+
+			smath::Vec3 pos { 0.0f, 0.0f, 0.0f };
+			pos[0] = position[0];
+			pos[1] = position[1];
+			if constexpr (N >= 3) {
+				pos[2] = position[2];
+			}
+
+			push_vertex(pos);
+		}
+		auto color(smath::Vec3 const &rgb) -> void;
+		auto color(smath::Vec4 const &rgba) -> void;
+		auto uv(smath::Vec2 const &uv) -> void;
+		auto normal(smath::Vec3 const &normal) -> void;
+		auto set_texture(std::optional<AllocatedImage const *> texture
+		    = std::nullopt) -> void;
+		auto draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
+		    smath::Vec4 color = smath::Vec4 { Colors::WHITE, 1.0f },
+		    float rotation = 0.0f) -> void;
+		auto end() -> void;
+		auto flush() -> void;
+
+		auto use_pipeline(Pipeline &pipeline) -> void;
+		auto set_transform(smath::Mat4 const &transform) -> void;
+		auto draw_mesh(GPUMeshBuffers const &mesh, smath::Mat4 const &transform,
+		    uint32_t index_count, uint32_t first_index = 0,
+		    int32_t vertex_offset = 0) -> void;
+
+	private:
+		auto push_vertex(smath::Vec3 const &pos) -> void;
+		auto emit_indices(size_t start, size_t count) -> void;
+		auto bind_pipeline_if_needed() -> void;
+
+		VulkanRenderer &m_renderer;
+		vk::CommandBuffer m_cmd {};
+		AllocatedImage *m_color_target { nullptr };
+		AllocatedImage *m_depth_target { nullptr };
+		GeometryKind m_current_kind { GeometryKind::Triangles };
+		bool m_inside_primitive { false };
+		bool m_drawing { false };
+		Pipeline *m_active_pipeline { nullptr };
+		smath::Mat4 m_transform { smath::Mat4::identity() };
+		smath::Vec4 m_current_color { 1.0f, 1.0f, 1.0f, 1.0f };
+		smath::Vec3 m_current_normal { 0.0f, 0.0f, 1.0f };
+		smath::Vec2 m_current_uv { 0.0f, 0.0f };
+		AllocatedImage const *m_bound_texture { nullptr };
+		size_t m_primitive_start { 0 };
+		std::vector<Vertex> m_vertices;
+		std::vector<uint32_t> m_indices;
+	};
+
 	VulkanRenderer(SDL_Window *window, Logger &logger);
 	~VulkanRenderer();
 
-	auto render() -> void;
+	auto render(std::function<void(GL &)> const &record = {}) -> void;
 	auto resize(uint32_t width, uint32_t height) -> void;
 
-	auto immediate_submit(std::function<void(vk::CommandBuffer cmd)> &&function)
-	    -> void;
+	auto immediate_submit(std::function<void(vk::CommandBuffer cmd)> &&function,
+	    bool flush_frame_deletion_queue = true,
+	    bool clear_frame_descriptors = true) -> void;
 	auto upload_mesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
 	    -> GPUMeshBuffers;
+	auto rectangle_mesh() const -> GPUMeshBuffers const &
+	{
+		return m_vk.rectangle;
+	}
+	auto test_meshes() const -> std::vector<std::shared_ptr<Mesh>> const &
+	{
+		return m_vk.test_meshes;
+	}
+	auto white_texture() const -> AllocatedImage const &
+	{
+		return m_vk.white_image;
+	}
+	auto gray_texture() const -> AllocatedImage const &
+	{
+		return m_vk.gray_image;
+	}
+	auto black_texture() const -> AllocatedImage const &
+	{
+		return m_vk.black_image;
+	}
+	auto error_texture() const -> AllocatedImage const &
+	{
+		return m_vk.error_image;
+	}
+	auto draw_extent() const -> vk::Extent2D { return m_vk.draw_extent; }
+	auto mesh_pipeline() -> Pipeline & { return m_vk.mesh_pipeline; }
+	auto triangle_pipeline() -> Pipeline & { return m_vk.triangle_pipeline; }
+	auto gl_api() -> GL & { return gl; }
 
 	auto logger() const -> Logger & { return m_logger; }
+
+	GL gl;
 
 private:
 	auto vk_init() -> void;
@@ -53,7 +158,6 @@ private:
 	auto default_data_init() -> void;
 
 	auto draw_background(vk::CommandBuffer cmd) -> void;
-	auto draw_geometry(vk::CommandBuffer cmd) -> void;
 	auto draw_imgui(vk::CommandBuffer cmd, vk::ImageView target_image_view)
 	    -> void;
 

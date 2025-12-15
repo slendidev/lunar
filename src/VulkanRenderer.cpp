@@ -6,6 +6,7 @@
 #include <cstring>
 #include <format>
 #include <iostream>
+#include <optional>
 #include <print>
 #include <stdexcept>
 
@@ -24,8 +25,422 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 namespace Lunar {
 
+VulkanRenderer::GL::GL(VulkanRenderer &renderer)
+    : m_renderer(renderer)
+{
+}
+
+auto VulkanRenderer::GL::begin_drawing(vk::CommandBuffer cmd,
+    AllocatedImage &color_target, AllocatedImage *depth_target) -> void
+{
+	if (m_drawing) {
+		end_drawing();
+	}
+
+	m_cmd = cmd;
+	m_color_target = &color_target;
+	m_depth_target = depth_target;
+	m_vertices.clear();
+	m_indices.clear();
+	m_inside_primitive = false;
+	m_drawing = true;
+	m_active_pipeline = &m_renderer.m_vk.mesh_pipeline;
+	m_transform = smath::Mat4::identity();
+	m_current_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	m_current_normal = { 0.0f, 0.0f, 1.0f };
+	m_current_uv = { 0.0f, 0.0f };
+	m_bound_texture = &m_renderer.m_vk.error_image;
+
+	auto const extent = vk::Extent2D {
+		m_color_target->extent.width,
+		m_color_target->extent.height,
+	};
+
+	auto color_att { vkinit::attachment_info(m_color_target->image_view,
+		nullptr, vk::ImageLayout::eColorAttachmentOptimal) };
+	std::optional<vk::RenderingAttachmentInfo> depth_att;
+	if (m_depth_target) {
+		depth_att = vkinit::depth_attachment_info(m_depth_target->image_view,
+		    vk::ImageLayout::eDepthAttachmentOptimal);
+	}
+
+	auto render_info { vkinit::render_info(
+		extent, &color_att, depth_att ? &*depth_att : nullptr) };
+	m_cmd.beginRendering(render_info);
+
+	vk::Viewport viewport {};
+	viewport.x = 0.0f;
+	viewport.y = 0.0f;
+	viewport.width = static_cast<float>(extent.width);
+	viewport.height = static_cast<float>(extent.height);
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+	m_cmd.setViewport(0, viewport);
+
+	vk::Rect2D scissor {};
+	scissor.offset.x = 0;
+	scissor.offset.y = 0;
+	scissor.extent = extent;
+	m_cmd.setScissor(0, scissor);
+
+	bind_pipeline_if_needed();
+}
+
+auto VulkanRenderer::GL::end_drawing() -> void
+{
+	if (!m_drawing)
+		return;
+
+	if (m_inside_primitive) {
+		end();
+	}
+
+	flush();
+	m_cmd.endRendering();
+
+	m_cmd = nullptr;
+	m_color_target = nullptr;
+	m_depth_target = nullptr;
+	m_drawing = false;
+	m_active_pipeline = nullptr;
+}
+
+auto VulkanRenderer::GL::begin(GeometryKind kind) -> void
+{
+	assert(m_drawing && "begin_drawing must be called first");
+	if (m_inside_primitive) {
+		end();
+	}
+
+	m_current_kind = kind;
+	m_primitive_start = m_vertices.size();
+	m_inside_primitive = true;
+}
+
+auto VulkanRenderer::GL::color(smath::Vec3 const &rgb) -> void
+{
+	m_current_color = smath::Vec4 { rgb, 1.0f };
+}
+
+auto VulkanRenderer::GL::color(smath::Vec4 const &rgba) -> void
+{
+	m_current_color = rgba;
+}
+
+auto VulkanRenderer::GL::uv(smath::Vec2 const &uv) -> void
+{
+	m_current_uv = uv;
+}
+
+auto VulkanRenderer::GL::normal(smath::Vec3 const &normal) -> void
+{
+	m_current_normal = normal;
+}
+
+auto VulkanRenderer::GL::set_texture(
+    std::optional<AllocatedImage const *> texture) -> void
+{
+	assert(m_drawing && "begin_drawing must be called first");
+	flush();
+	m_bound_texture = texture.value_or(&m_renderer.m_vk.error_image);
+}
+
+auto VulkanRenderer::GL::end() -> void
+{
+	if (!m_inside_primitive)
+		return;
+
+	auto const count = m_vertices.size() - m_primitive_start;
+	emit_indices(m_primitive_start, count);
+	m_inside_primitive = false;
+}
+
+auto VulkanRenderer::GL::flush() -> void
+{
+	if (!m_drawing || m_vertices.empty() || m_indices.empty())
+		return;
+
+	auto const vertex_data_size { m_vertices.size() * sizeof(Vertex) };
+	auto const index_data_size { m_indices.size() * sizeof(uint32_t) };
+	auto const staging_size { vertex_data_size + index_data_size };
+
+	auto staging = m_renderer.create_buffer(staging_size,
+	    vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY);
+
+	void *staging_dst = staging.info.pMappedData;
+	bool staging_mapped_here { false };
+	if (!staging_dst) {
+		VkResult res = vmaMapMemory(
+		    m_renderer.m_vk.allocator, staging.allocation, &staging_dst);
+		assert(res == VK_SUCCESS);
+		staging_mapped_here = true;
+	}
+	memcpy(staging_dst, m_vertices.data(), vertex_data_size);
+	memcpy(reinterpret_cast<uint8_t *>(staging_dst) + vertex_data_size,
+	    m_indices.data(), index_data_size);
+	if (staging_mapped_here) {
+		vmaUnmapMemory(m_renderer.m_vk.allocator, staging.allocation);
+	}
+
+	auto vertex_buffer { m_renderer.create_buffer(vertex_data_size,
+		vk::BufferUsageFlagBits::eVertexBuffer
+		    | vk::BufferUsageFlagBits::eTransferDst
+		    | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+		VMA_MEMORY_USAGE_GPU_ONLY) };
+	auto index_buffer { m_renderer.create_buffer(index_data_size,
+		vk::BufferUsageFlagBits::eIndexBuffer
+		    | vk::BufferUsageFlagBits::eTransferDst,
+		VMA_MEMORY_USAGE_GPU_ONLY) };
+
+	m_renderer.immediate_submit([&](vk::CommandBuffer cmd) {
+		vk::BufferCopy vertex_copy {};
+		vertex_copy.srcOffset = 0;
+		vertex_copy.dstOffset = 0;
+		vertex_copy.size = vertex_data_size;
+		cmd.copyBuffer(
+		    staging.buffer, vertex_buffer.buffer, 1, &vertex_copy);
+
+		vk::BufferCopy index_copy {};
+		index_copy.srcOffset = vertex_data_size;
+		index_copy.dstOffset = 0;
+		index_copy.size = index_data_size;
+		cmd.copyBuffer(
+		    staging.buffer, index_buffer.buffer, 1, &index_copy);
+	},
+	    /*flush_frame_deletion_queue=*/false,
+	    /*clear_frame_descriptors=*/false);
+
+	m_renderer.destroy_buffer(staging);
+
+	auto cmd { m_cmd };
+
+	bind_pipeline_if_needed();
+
+	if (m_active_pipeline == &m_renderer.m_vk.mesh_pipeline) {
+		auto const image_set {
+			m_renderer.m_vk.get_current_frame().frame_descriptors.allocate(
+			    m_renderer.m_logger, m_renderer.m_vkb.dev.device,
+			    m_renderer.m_vk.single_image_descriptor_layout)
+		};
+
+		auto const *image
+		    = m_bound_texture ? m_bound_texture : &m_renderer.m_vk.error_image;
+		DescriptorWriter()
+		    .write_image(0, image->image_view,
+		        m_renderer.m_vk.default_sampler_nearest.get(),
+		        static_cast<VkImageLayout>(
+		            vk::ImageLayout::eShaderReadOnlyOptimal),
+		        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+		    .update_set(m_renderer.m_vkb.dev.device, image_set);
+
+		auto vk_image_set = vk::DescriptorSet { image_set };
+		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+		    m_renderer.m_vk.mesh_pipeline.get_layout(), 0, vk_image_set, {});
+
+		GPUDrawPushConstants push_constants {};
+		push_constants.world_matrix = m_transform;
+
+		vk::BufferDeviceAddressInfo device_address_info {};
+		device_address_info.buffer = vertex_buffer.buffer;
+		push_constants.vertex_buffer
+		    = m_renderer.m_device.getBufferAddress(device_address_info);
+
+		cmd.pushConstants(m_renderer.m_vk.mesh_pipeline.get_layout(),
+		    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
+		    &push_constants);
+	}
+
+	cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
+	cmd.drawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
+
+	m_renderer.m_vk.get_current_frame().deletion_queue.emplace([=, this]() {
+		m_renderer.destroy_buffer(index_buffer);
+		m_renderer.destroy_buffer(vertex_buffer);
+	});
+
+	m_vertices.clear();
+	m_indices.clear();
+}
+
+auto VulkanRenderer::GL::use_pipeline(Pipeline &pipeline) -> void
+{
+	if (&pipeline == m_active_pipeline) {
+		return;
+	}
+
+	flush();
+
+	m_active_pipeline = &pipeline;
+	bind_pipeline_if_needed();
+}
+
+auto VulkanRenderer::GL::set_transform(smath::Mat4 const &transform) -> void
+{
+	flush();
+	m_transform = transform;
+}
+
+auto VulkanRenderer::GL::draw_rectangle(
+    smath::Vec2 pos, smath::Vec2 size, smath::Vec4 rect_color, float rotation)
+    -> void
+{
+	auto const half_size = size * 0.5f;
+	auto const center = pos + half_size;
+
+	auto rotate = [&](smath::Vec2 const &p) {
+		float const c = std::cos(rotation);
+		float const s = std::sin(rotation);
+		return smath::Vec2 { c * p.x() - s * p.y(), s * p.x() + c * p.y() };
+	};
+
+	auto const br = center + rotate(smath::Vec2 { half_size.x(), -half_size.y() });
+	auto const tr = center + rotate(smath::Vec2 { half_size.x(), half_size.y() });
+	auto const bl = center + rotate(smath::Vec2 { -half_size.x(), -half_size.y() });
+	auto const tl = center + rotate(smath::Vec2 { -half_size.x(), half_size.y() });
+
+	begin(GeometryKind::Quads);
+
+	color(rect_color);
+	uv(smath::Vec2 { 1.0f, 1.0f });
+	vert(smath::Vec3 { br.x(), br.y(), 0.0f });
+
+	color(rect_color);
+	uv(smath::Vec2 { 1.0f, 0.0f });
+	vert(smath::Vec3 { tr.x(), tr.y(), 0.0f });
+
+	color(rect_color);
+	uv(smath::Vec2 { 0.0f, 1.0f });
+	vert(smath::Vec3 { bl.x(), bl.y(), 0.0f });
+
+	color(rect_color);
+	uv(smath::Vec2 { 0.0f, 0.0f });
+	vert(smath::Vec3 { tl.x(), tl.y(), 0.0f });
+
+	end();
+}
+
+auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
+    smath::Mat4 const &transform, uint32_t index_count, uint32_t first_index,
+    int32_t vertex_offset) -> void
+{
+	assert(m_drawing && "begin_drawing must be called first");
+
+	flush();
+	use_pipeline(m_renderer.m_vk.mesh_pipeline);
+
+	auto const image_set {
+		m_renderer.m_vk.get_current_frame().frame_descriptors.allocate(
+		    m_renderer.m_logger, m_renderer.m_vkb.dev.device,
+		    m_renderer.m_vk.single_image_descriptor_layout)
+	};
+	auto const *image
+	    = m_bound_texture ? m_bound_texture : &m_renderer.m_vk.error_image;
+	DescriptorWriter()
+	    .write_image(0, image->image_view,
+	        m_renderer.m_vk.default_sampler_nearest.get(),
+	        static_cast<VkImageLayout>(vk::ImageLayout::eShaderReadOnlyOptimal),
+	        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+	    .update_set(m_renderer.m_vkb.dev.device, image_set);
+
+	auto vk_image_set = vk::DescriptorSet { image_set };
+	m_cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+	    m_renderer.m_vk.mesh_pipeline.get_layout(), 0, vk_image_set, {});
+
+	GPUDrawPushConstants push_constants {};
+	push_constants.world_matrix = transform;
+	push_constants.vertex_buffer = mesh.vertex_buffer_address;
+
+	m_cmd.pushConstants(m_renderer.m_vk.mesh_pipeline.get_layout(),
+	    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
+	    &push_constants);
+
+	m_cmd.bindIndexBuffer(mesh.index_buffer.buffer, 0, vk::IndexType::eUint32);
+	m_cmd.drawIndexed(index_count, 1, first_index, vertex_offset, 0);
+}
+
+auto VulkanRenderer::GL::push_vertex(smath::Vec3 const &pos) -> void
+{
+	assert(m_drawing && "begin_drawing must be called first");
+
+	Vertex v {};
+	v.position = pos;
+	v.u = m_current_uv.x();
+	v.v = m_current_uv.y();
+	v.normal = m_current_normal;
+	v.color = m_current_color;
+
+	m_vertices.emplace_back(v);
+}
+
+auto VulkanRenderer::GL::emit_indices(size_t start, size_t count) -> void
+{
+	switch (m_current_kind) {
+	case GeometryKind::Triangles: {
+		for (size_t i = 0; (i + 2) < count; i += 3) {
+			m_indices.emplace_back(static_cast<uint32_t>(start + i + 0));
+			m_indices.emplace_back(static_cast<uint32_t>(start + i + 1));
+			m_indices.emplace_back(static_cast<uint32_t>(start + i + 2));
+		}
+		break;
+	}
+	case GeometryKind::TriangleStrip: {
+		if (count < 3)
+			break;
+		for (size_t i = 0; (i + 2) < count; i++) {
+			if (i % 2 == 0) {
+				m_indices.emplace_back(static_cast<uint32_t>(start + i + 0));
+				m_indices.emplace_back(static_cast<uint32_t>(start + i + 1));
+				m_indices.emplace_back(static_cast<uint32_t>(start + i + 2));
+			} else {
+				m_indices.emplace_back(static_cast<uint32_t>(start + i + 1));
+				m_indices.emplace_back(static_cast<uint32_t>(start + i + 0));
+				m_indices.emplace_back(static_cast<uint32_t>(start + i + 2));
+			}
+		}
+		break;
+	}
+	case GeometryKind::TriangleFan: {
+		if (count < 3)
+			break;
+		for (size_t i = 1; (i + 1) < count; i++) {
+			m_indices.emplace_back(static_cast<uint32_t>(start));
+			m_indices.emplace_back(static_cast<uint32_t>(start + i));
+			m_indices.emplace_back(static_cast<uint32_t>(start + i + 1));
+		}
+		break;
+	}
+	case GeometryKind::Quads: {
+		if (count < 4)
+			break;
+
+		size_t const quad_count { count / 4 };
+		for (size_t q = 0; q < quad_count; q++) {
+			size_t const base = start + q * 4;
+			m_indices.emplace_back(static_cast<uint32_t>(base + 0));
+			m_indices.emplace_back(static_cast<uint32_t>(base + 1));
+			m_indices.emplace_back(static_cast<uint32_t>(base + 2));
+
+			m_indices.emplace_back(static_cast<uint32_t>(base + 2));
+			m_indices.emplace_back(static_cast<uint32_t>(base + 1));
+			m_indices.emplace_back(static_cast<uint32_t>(base + 3));
+		}
+		break;
+	}
+	}
+}
+
+auto VulkanRenderer::GL::bind_pipeline_if_needed() -> void
+{
+	if (!m_drawing || !m_active_pipeline)
+		return;
+
+	m_cmd.bindPipeline(
+	    vk::PipelineBindPoint::eGraphics, m_active_pipeline->get());
+}
+
 VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
-    : m_window(window)
+    : gl(*this)
+    , m_window(window)
     , m_logger(logger)
 {
 	if (m_window == nullptr) {
@@ -91,7 +506,8 @@ auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 }
 
 auto VulkanRenderer::immediate_submit(
-    std::function<void(vk::CommandBuffer cmd)> &&function) -> void
+    std::function<void(vk::CommandBuffer cmd)> &&function,
+    bool flush_frame_deletion_queue, bool clear_frame_descriptors) -> void
 {
 	m_device.resetFences(m_vk.imm_fence.get());
 	m_vk.imm_command_buffer.get().reset();
@@ -112,8 +528,13 @@ auto VulkanRenderer::immediate_submit(
 	VK_CHECK(m_logger,
 	    m_device.waitForFences(m_vk.imm_fence.get(), true, 9'999'999'999));
 
-	m_vk.get_current_frame().deletion_queue.flush();
-	m_vk.get_current_frame().frame_descriptors.clear_pools(m_vkb.dev.device);
+	if (flush_frame_deletion_queue) {
+		m_vk.get_current_frame().deletion_queue.flush();
+	}
+	if (clear_frame_descriptors) {
+		m_vk.get_current_frame().frame_descriptors.clear_pools(
+		    m_vkb.dev.device);
+	}
 }
 
 auto VulkanRenderer::vk_init() -> void
@@ -647,7 +1068,7 @@ auto VulkanRenderer::default_data_init() -> void
 	});
 }
 
-auto VulkanRenderer::render() -> void
+auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 {
 	defer(m_vk.frame_number++);
 
@@ -698,7 +1119,11 @@ auto VulkanRenderer::render() -> void
 	vkutil::transition_image(cmd, m_vk.depth_image.image,
 	    vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthAttachmentOptimal);
 
-	draw_geometry(cmd);
+	gl.begin_drawing(cmd, m_vk.draw_image, &m_vk.depth_image);
+	if (record) {
+		record(gl);
+	}
+	gl.end_drawing();
 
 	vkutil::transition_image(cmd, m_vk.draw_image.image,
 	    vk::ImageLayout::eColorAttachmentOptimal,
@@ -765,130 +1190,6 @@ auto VulkanRenderer::draw_background(vk::CommandBuffer cmd) -> void
 	cmd.dispatch(
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.width / 16.0)),
 	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.height / 16.0)), 1);
-}
-
-auto VulkanRenderer::draw_geometry(vk::CommandBuffer cmd) -> void
-{
-	auto gpu_scene_data_buffer { create_buffer(sizeof(GPUSceneData),
-		vk::BufferUsageFlagBits::eUniformBuffer, VMA_MEMORY_USAGE_CPU_TO_GPU) };
-	m_vk.get_current_frame().deletion_queue.emplace(
-	    [=, this]() { destroy_buffer(gpu_scene_data_buffer); });
-
-	VmaAllocationInfo info {};
-	vmaGetAllocationInfo(
-	    m_vk.allocator, gpu_scene_data_buffer.allocation, &info);
-
-	GPUSceneData *scene_uniform_data
-	    = reinterpret_cast<GPUSceneData *>(info.pMappedData);
-	if (!scene_uniform_data) {
-		VkResult res = vmaMapMemory(m_vk.allocator,
-		    gpu_scene_data_buffer.allocation, (void **)&scene_uniform_data);
-		assert(res == VK_SUCCESS);
-	}
-	defer({
-		if (info.pMappedData == nullptr) {
-			vmaUnmapMemory(m_vk.allocator, gpu_scene_data_buffer.allocation);
-		}
-	});
-
-	*scene_uniform_data = m_vk.scene_data;
-
-	auto const global_desc {
-		m_vk.get_current_frame().frame_descriptors.allocate(
-		    m_logger, m_vkb.dev.device, m_vk.gpu_scene_data_descriptor_layout)
-	};
-
-	DescriptorWriter writer;
-	writer.write_buffer(0, gpu_scene_data_buffer.buffer, sizeof(GPUSceneData),
-	    0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-	writer.update_set(m_vkb.dev.device, global_desc);
-
-	auto color_att { vkinit::attachment_info(m_vk.draw_image.image_view,
-		nullptr, vk::ImageLayout::eColorAttachmentOptimal) };
-	auto depth_att { vkinit::depth_attachment_info(m_vk.depth_image.image_view,
-		vk::ImageLayout::eDepthAttachmentOptimal) };
-	auto const render_info { vkinit::render_info(
-		m_vk.draw_extent, &color_att, &depth_att) };
-
-	cmd.beginRendering(render_info);
-
-	cmd.bindPipeline(
-	    vk::PipelineBindPoint::eGraphics, m_vk.triangle_pipeline.get());
-
-	vk::Viewport viewport {};
-	viewport.x = 0;
-	viewport.y = 0;
-	viewport.width = static_cast<float>(m_vk.draw_extent.width);
-	viewport.height = static_cast<float>(m_vk.draw_extent.height);
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-	cmd.setViewport(0, viewport);
-
-	vk::Rect2D scissor {};
-	scissor.offset.x = 0;
-	scissor.offset.y = 0;
-	scissor.extent = m_vk.draw_extent;
-	cmd.setScissor(0, scissor);
-
-	cmd.bindPipeline(
-	    vk::PipelineBindPoint::eGraphics, m_vk.mesh_pipeline.get());
-
-	auto const image_set { m_vk.get_current_frame().frame_descriptors.allocate(
-		m_logger, m_vkb.dev.device, m_vk.single_image_descriptor_layout) };
-	DescriptorWriter()
-	    .write_image(0, m_vk.error_image.image_view,
-	        m_vk.default_sampler_nearest.get(),
-	        static_cast<VkImageLayout>(vk::ImageLayout::eShaderReadOnlyOptimal),
-	        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-	    .update_set(m_vkb.dev.device, image_set);
-
-	auto vk_image_set = vk::DescriptorSet { image_set };
-	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-	    m_vk.mesh_pipeline.get_layout(), 0, vk_image_set, {});
-
-	auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
-		smath::Vec3 { 0.0f, 0.0f, 0.0f }, smath::Vec3 { 0.0f, 1.0f, 0.0f },
-		false) };
-	auto projection {
-		smath::matrix_perspective(smath::deg(70.0f),
-		    static_cast<float>(m_vk.draw_extent.width)
-		        / static_cast<float>(m_vk.draw_extent.height),
-		    0.1f, 10000.0f),
-	};
-	projection[1][1] *= -1;
-	auto view_projection { projection * view };
-
-	GPUDrawPushConstants push_constants;
-	auto rect_model { smath::scale(
-		smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
-		smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
-	push_constants.world_matrix = view_projection * rect_model;
-	push_constants.vertex_buffer = m_vk.rectangle.vertex_buffer_address;
-
-	cmd.pushConstants(m_vk.mesh_pipeline.get_layout(),
-	    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
-	    &push_constants);
-	cmd.bindIndexBuffer(
-	    m_vk.rectangle.index_buffer.buffer, 0, vk::IndexType::eUint32);
-
-	cmd.drawIndexed(6, 1, 0, 0, 0);
-
-	push_constants.vertex_buffer
-	    = m_vk.test_meshes[2]->mesh_buffers.vertex_buffer_address;
-
-	auto model { smath::Mat4::identity() };
-	push_constants.world_matrix = view_projection * model;
-
-	cmd.pushConstants(m_vk.mesh_pipeline.get_layout(),
-	    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
-	    &push_constants);
-	cmd.bindIndexBuffer(m_vk.test_meshes[2]->mesh_buffers.index_buffer.buffer,
-	    0, vk::IndexType::eUint32);
-
-	cmd.drawIndexed(m_vk.test_meshes[2]->surfaces[0].count, 1,
-	    m_vk.test_meshes[2]->surfaces[0].start_index, 0, 0);
-
-	cmd.endRendering();
 }
 
 auto VulkanRenderer::draw_imgui(
@@ -1168,7 +1469,8 @@ auto VulkanRenderer::create_buffer(size_t alloc_size,
 	VmaAllocationCreateInfo alloc_ci {};
 	alloc_ci.usage = memory_usage;
 	alloc_ci.flags = 0;
-	if (memory_usage == VMA_MEMORY_USAGE_CPU_ONLY) {
+	if (memory_usage == VMA_MEMORY_USAGE_CPU_ONLY
+	    || memory_usage == VMA_MEMORY_USAGE_CPU_TO_GPU) {
 		alloc_ci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT
 		    | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 	}
