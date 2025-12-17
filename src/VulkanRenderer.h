@@ -2,7 +2,9 @@
 
 #include <array>
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include <SDL3/SDL_video.h>
@@ -156,6 +158,14 @@ struct VulkanRenderer {
 	GL gl;
 
 private:
+	struct RenderCommand {
+		struct SetAntiAliasing {
+			AntiAliasingKind kind;
+		};
+
+		std::variant<SetAntiAliasing> payload;
+	};
+
 	auto vk_init() -> void;
 	auto swapchain_init() -> void;
 	auto commands_init() -> void;
@@ -190,6 +200,9 @@ private:
 	auto create_buffer(size_t alloc_size, vk::BufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
 	auto destroy_buffer(AllocatedBuffer const &buffer) -> void;
+	auto enqueue_render_command(RenderCommand &&command) -> void;
+	auto process_render_commands() -> void;
+	auto apply_antialiasing(AntiAliasingKind kind) -> void;
 
 	vk::Instance m_instance {};
 	vk::PhysicalDevice m_physical_device {};
@@ -267,6 +280,8 @@ private:
 
 	SDL_Window *m_window { nullptr };
 	Logger &m_logger;
+	std::mutex m_command_mutex;
+	std::vector<RenderCommand> m_pending_render_commands;
 };
 
 } // namespace Lunar

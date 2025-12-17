@@ -224,6 +224,8 @@ Application::Application()
 	mouse_captured(true);
 
 	m_logger.info("App init done!");
+
+	m_renderer->set_antialiasing(VulkanRenderer::AntiAliasingKind::MSAA_4X);
 }
 
 Application::~Application()
@@ -307,6 +309,7 @@ auto Application::run() -> void
 			}
 			ImGui::PopStyleColor();
 
+			ImGui::SetNextWindowSize({ 300, -1 }, ImGuiCond_Once);
 			if (ImGui::Begin("Fun menu")) {
 				defer(ImGui::End());
 
@@ -319,10 +322,8 @@ auto Application::run() -> void
 				int selected_item {
 					static_cast<int>(m_renderer->antialiasing()),
 				};
-				int prev_selected_item { selected_item };
-				ImGui::Combo("Antialiasing", &selected_item, aa_items.data(),
-				    aa_items.size());
-				if (prev_selected_item != selected_item) {
+				if (ImGui::Combo("Antialiasing", &selected_item,
+				        aa_items.data(), aa_items.size())) {
 					m_renderer->set_antialiasing(
 					    static_cast<VulkanRenderer::AntiAliasingKind>(
 					        selected_item));
@@ -331,8 +332,6 @@ auto Application::run() -> void
 		}
 
 		ImGui::Render();
-
-		m_renderer->set_antialiasing(VulkanRenderer::AntiAliasingKind::MSAA_8X);
 
 		m_renderer->render([&](VulkanRenderer::GL &gl) {
 			auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },

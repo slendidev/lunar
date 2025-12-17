@@ -9,6 +9,8 @@
 #include <optional>
 #include <print>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
@@ -527,6 +529,13 @@ auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 
 auto VulkanRenderer::set_antialiasing(AntiAliasingKind kind) -> void
 {
+	enqueue_render_command(RenderCommand {
+		RenderCommand::SetAntiAliasing { kind },
+	});
+}
+
+auto VulkanRenderer::apply_antialiasing(AntiAliasingKind kind) -> void
+{
 	auto requested_samples = [&](AntiAliasingKind aa) {
 		switch (aa) {
 		case AntiAliasingKind::NONE:
@@ -614,6 +623,33 @@ auto VulkanRenderer::set_antialiasing(AntiAliasingKind kind) -> void
 	create_depth_image(
 	    m_vk.swapchain_extent.width, m_vk.swapchain_extent.height);
 	pipelines_init();
+}
+
+auto VulkanRenderer::enqueue_render_command(RenderCommand &&command) -> void
+{
+	std::scoped_lock lock { m_command_mutex };
+	m_pending_render_commands.emplace_back(std::move(command));
+}
+
+auto VulkanRenderer::process_render_commands() -> void
+{
+	std::vector<RenderCommand> commands;
+	{
+		std::scoped_lock lock { m_command_mutex };
+		commands.swap(m_pending_render_commands);
+	}
+
+	for (auto &command : commands) {
+		std::visit(
+		    [&](auto &&payload) {
+			    using Payload = std::decay_t<decltype(payload)>;
+			    if constexpr (std::is_same_v<Payload,
+			                      RenderCommand::SetAntiAliasing>) {
+				    apply_antialiasing(payload.kind);
+			    }
+		    },
+		    command.payload);
+	}
 }
 
 auto VulkanRenderer::immediate_submit(
@@ -1154,6 +1190,8 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    || m_vk.swapchain_extent.height == 0) {
 		return;
 	}
+
+	process_render_commands();
 
 	auto &frame = m_vk.get_current_frame();
 	VK_CHECK(m_logger,
