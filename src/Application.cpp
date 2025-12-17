@@ -306,6 +306,28 @@ auto Application::run() -> void
 				ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
 			}
 			ImGui::PopStyleColor();
+
+			if (ImGui::Begin("Fun menu")) {
+				defer(ImGui::End());
+
+				static std::array<char const *, 4> const aa_items {
+					"None",
+					"MSAA 2X",
+					"MSAA 4X",
+					"MSAA 8X",
+				};
+				int selected_item {
+					static_cast<int>(m_renderer->antialiasing()),
+				};
+				int prev_selected_item { selected_item };
+				ImGui::Combo("Antialiasing", &selected_item, aa_items.data(),
+				    aa_items.size());
+				if (prev_selected_item != selected_item) {
+					m_renderer->set_antialiasing(
+					    static_cast<VulkanRenderer::AntiAliasingKind>(
+					        selected_item));
+				}
+			}
 		}
 
 		ImGui::Render();
