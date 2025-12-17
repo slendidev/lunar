@@ -1155,15 +1155,17 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 		return;
 	}
 
+	auto &frame = m_vk.get_current_frame();
 	VK_CHECK(m_logger,
-	    m_device.waitForFences(
-	        m_vk.get_current_frame().render_fence.get(), true, 1'000'000'000));
-	auto raw_fence
-	    = static_cast<VkFence>(m_vk.get_current_frame().render_fence.get());
+	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
+	frame.deletion_queue.flush();
+	frame.frame_descriptors.clear_pools(m_vkb.dev.device);
+
+	auto raw_fence = static_cast<VkFence>(frame.render_fence.get());
 	VK_CHECK(m_logger, vkResetFences(m_vkb.dev.device, 1, &raw_fence));
 
-	auto const acquire_result = m_device.acquireNextImageKHR(m_vk.swapchain,
-	    1'000'000'000, m_vk.get_current_frame().swapchain_semaphore.get(), {});
+	auto const acquire_result = m_device.acquireNextImageKHR(
+	    m_vk.swapchain, 1'000'000'000, frame.swapchain_semaphore.get(), {});
 	if (acquire_result.result == vk::Result::eErrorOutOfDateKHR
 	    || acquire_result.result == vk::Result::eSuboptimalKHR) {
 		int width {}, height {};
@@ -1175,7 +1177,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	VK_CHECK(m_logger, acquire_result.result);
 	uint32_t const swapchain_image_idx { acquire_result.value };
 
-	auto cmd { m_vk.get_current_frame().main_command_buffer.get() };
+	auto cmd { frame.main_command_buffer.get() };
 	cmd.reset();
 
 	m_vk.draw_extent.width = m_vk.draw_image.extent.width;

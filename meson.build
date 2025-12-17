@@ -82,6 +82,8 @@ add_project_arguments(
 		'-Wno-macro-redefined',
 		'-DVULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE',
 		'-DVULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1',
+		# Thanks forityf source
+		'-Wno-#warnings'
 	],
 	language : 'cpp'
 )

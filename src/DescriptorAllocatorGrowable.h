@@ -30,7 +30,9 @@ private:
 	    std::span<PoolSizeRatio> pool_ratios) -> VkDescriptorPool;
 
 	std::vector<PoolSizeRatio> m_ratios;
+	VkDescriptorPool m_current_pool { VK_NULL_HANDLE };
 	std::vector<VkDescriptorPool> m_full_pools;
+	std::vector<VkDescriptorPool> m_used_pools;
 	std::vector<VkDescriptorPool> m_ready_pools;
 	uint32_t m_sets_per_pool;
 };

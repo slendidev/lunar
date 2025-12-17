@@ -45,6 +45,7 @@
                 with pkgs;
                 [
                   llvmPackages_21.clang-tools
+                  llvmPackages_21.bintools
                   lldb
                   codespell
                   doxygen
