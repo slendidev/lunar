@@ -13,7 +13,6 @@
 
 #include "Colors.h"
 #include "DeletionQueue.h"
-#include "DescriptorAllocator.h"
 #include "Loader.h"
 #include "Logger.h"
 #include "Pipeline.h"
@@ -29,6 +28,13 @@ struct GPUDrawPushConstants {
 constexpr unsigned FRAME_OVERLAP = 2;
 
 struct VulkanRenderer {
+	enum class AntiAliasingKind {
+		NONE,
+		MSAA_2X,
+		MSAA_4X,
+		MSAA_8X,
+	};
+
 	struct GL {
 		enum class GeometryKind {
 			Triangles,
@@ -105,6 +111,11 @@ struct VulkanRenderer {
 
 	auto render(std::function<void(GL &)> const &record = {}) -> void;
 	auto resize(uint32_t width, uint32_t height) -> void;
+	auto set_antialiasing(AntiAliasingKind kind) -> void;
+	auto antialiasing() const -> AntiAliasingKind
+	{
+		return m_vk.antialiasing_kind;
+	}
 
 	auto immediate_submit(std::function<void(vk::CommandBuffer cmd)> &&function,
 	    bool flush_frame_deletion_queue = true,
@@ -151,26 +162,27 @@ private:
 	auto sync_init() -> void;
 	auto descriptors_init() -> void;
 	auto pipelines_init() -> void;
-	auto background_pipelines_init() -> void;
 	auto triangle_pipeline_init() -> void;
 	auto mesh_pipeline_init() -> void;
 	auto imgui_init() -> void;
 	auto default_data_init() -> void;
 
-	auto draw_background(vk::CommandBuffer cmd) -> void;
 	auto draw_imgui(vk::CommandBuffer cmd, vk::ImageView target_image_view)
 	    -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
 	auto create_draw_image(uint32_t width, uint32_t height) -> void;
-	auto update_draw_image_descriptor() -> void;
+	auto create_msaa_color_image(uint32_t width, uint32_t height) -> void;
 	auto destroy_draw_image() -> void;
 	auto create_depth_image(uint32_t width, uint32_t height) -> void;
 	auto destroy_depth_image() -> void;
+	auto destroy_msaa_color_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
 	auto create_image(vk::Extent3D size, vk::Format format,
-	    vk::ImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
+	    vk::ImageUsageFlags flags,
+	    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1,
+	    bool mipmapped = false) -> AllocatedImage;
 	auto create_image(void const *data, vk::Extent3D size, vk::Format format,
 	    vk::ImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
 	auto destroy_image(AllocatedImage const &img) -> void;
@@ -210,21 +222,23 @@ private:
 
 		std::array<FrameData, FRAME_OVERLAP> frames;
 		AllocatedImage draw_image {};
+		vk::ImageLayout draw_image_layout { vk::ImageLayout::eUndefined };
+		AllocatedImage msaa_color_image {};
+		vk::ImageLayout msaa_color_image_layout { vk::ImageLayout::eUndefined };
 		AllocatedImage depth_image {};
+		vk::ImageLayout depth_image_layout { vk::ImageLayout::eUndefined };
 		vk::Extent2D draw_extent {};
+		AntiAliasingKind antialiasing_kind { AntiAliasingKind::NONE };
+		vk::SampleCountFlagBits msaa_samples { vk::SampleCountFlagBits::e1 };
+		vk::SampleCountFlags supported_framebuffer_samples {};
 
 		VmaAllocator allocator;
-		DescriptorAllocator descriptor_allocator;
-
-		VkDescriptorSet draw_image_descriptors {};
-		vk::DescriptorSetLayout draw_image_descriptor_layout {};
 
 		GPUSceneData scene_data {};
 		vk::DescriptorSetLayout gpu_scene_data_descriptor_layout {};
 
 		vk::DescriptorSetLayout single_image_descriptor_layout {};
 
-		Pipeline gradient_pipeline;
 		Pipeline triangle_pipeline;
 		Pipeline mesh_pipeline;
 

@@ -56,8 +56,25 @@ auto VulkanRenderer::GL::begin_drawing(vk::CommandBuffer cmd,
 		m_color_target->extent.height,
 	};
 
-	auto color_att { vkinit::attachment_info(m_color_target->image_view,
-		nullptr, vk::ImageLayout::eColorAttachmentOptimal) };
+	vk::RenderingAttachmentInfo color_att {};
+	vk::ClearValue clear {};
+	clear.color = vk::ClearColorValue {
+		smath::Vec4 { Colors::DARK_SLATE_GRAY, 1.0f },
+	};
+	if (m_renderer.m_vk.msaa_samples != vk::SampleCountFlagBits::e1) {
+		assert(m_renderer.m_vk.msaa_color_image.image_view
+		    && "MSAA enabled but MSAA color image is missing");
+		color_att = vkinit::attachment_info(
+		    m_renderer.m_vk.msaa_color_image.image_view, &clear,
+		    vk::ImageLayout::eColorAttachmentOptimal);
+		color_att.resolveMode = vk::ResolveModeFlagBits::eAverage;
+		color_att.resolveImageView = m_color_target->image_view;
+		color_att.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+		color_att.storeOp = vk::AttachmentStoreOp::eDontCare;
+	} else {
+		color_att = vkinit::attachment_info(m_color_target->image_view, &clear,
+		    vk::ImageLayout::eColorAttachmentOptimal);
+	}
 	std::optional<vk::RenderingAttachmentInfo> depth_att;
 	if (m_depth_target) {
 		depth_att = vkinit::depth_attachment_info(m_depth_target->image_view,
@@ -192,21 +209,21 @@ auto VulkanRenderer::GL::flush() -> void
 		    | vk::BufferUsageFlagBits::eTransferDst,
 		VMA_MEMORY_USAGE_GPU_ONLY) };
 
-	m_renderer.immediate_submit([&](vk::CommandBuffer cmd) {
-		vk::BufferCopy vertex_copy {};
-		vertex_copy.srcOffset = 0;
-		vertex_copy.dstOffset = 0;
-		vertex_copy.size = vertex_data_size;
-		cmd.copyBuffer(
-		    staging.buffer, vertex_buffer.buffer, 1, &vertex_copy);
+	m_renderer.immediate_submit(
+	    [&](vk::CommandBuffer cmd) {
+		    vk::BufferCopy vertex_copy {};
+		    vertex_copy.srcOffset = 0;
+		    vertex_copy.dstOffset = 0;
+		    vertex_copy.size = vertex_data_size;
+		    cmd.copyBuffer(
+		        staging.buffer, vertex_buffer.buffer, 1, &vertex_copy);
 
-		vk::BufferCopy index_copy {};
-		index_copy.srcOffset = vertex_data_size;
-		index_copy.dstOffset = 0;
-		index_copy.size = index_data_size;
-		cmd.copyBuffer(
-		    staging.buffer, index_buffer.buffer, 1, &index_copy);
-	},
+		    vk::BufferCopy index_copy {};
+		    index_copy.srcOffset = vertex_data_size;
+		    index_copy.dstOffset = 0;
+		    index_copy.size = index_data_size;
+		    cmd.copyBuffer(staging.buffer, index_buffer.buffer, 1, &index_copy);
+	    },
 	    /*flush_frame_deletion_queue=*/false,
 	    /*clear_frame_descriptors=*/false);
 
@@ -280,9 +297,8 @@ auto VulkanRenderer::GL::set_transform(smath::Mat4 const &transform) -> void
 	m_transform = transform;
 }
 
-auto VulkanRenderer::GL::draw_rectangle(
-    smath::Vec2 pos, smath::Vec2 size, smath::Vec4 rect_color, float rotation)
-    -> void
+auto VulkanRenderer::GL::draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
+    smath::Vec4 rect_color, float rotation) -> void
 {
 	auto const half_size = size * 0.5f;
 	auto const center = pos + half_size;
@@ -293,10 +309,14 @@ auto VulkanRenderer::GL::draw_rectangle(
 		return smath::Vec2 { c * p.x() - s * p.y(), s * p.x() + c * p.y() };
 	};
 
-	auto const br = center + rotate(smath::Vec2 { half_size.x(), -half_size.y() });
-	auto const tr = center + rotate(smath::Vec2 { half_size.x(), half_size.y() });
-	auto const bl = center + rotate(smath::Vec2 { -half_size.x(), -half_size.y() });
-	auto const tl = center + rotate(smath::Vec2 { -half_size.x(), half_size.y() });
+	auto const br
+	    = center + rotate(smath::Vec2 { half_size.x(), -half_size.y() });
+	auto const tr
+	    = center + rotate(smath::Vec2 { half_size.x(), half_size.y() });
+	auto const bl
+	    = center + rotate(smath::Vec2 { -half_size.x(), -half_size.y() });
+	auto const tl
+	    = center + rotate(smath::Vec2 { -half_size.x(), half_size.y() });
 
 	begin(GeometryKind::Quads);
 
@@ -473,7 +493,6 @@ VulkanRenderer::~VulkanRenderer()
 	m_vk.imm_command_buffer.reset();
 	m_vk.imm_command_pool.reset();
 	m_vk.imm_fence.reset();
-	m_vk.gradient_pipeline.reset();
 	m_vk.triangle_pipeline.reset();
 	m_vk.mesh_pipeline.reset();
 	m_vk.default_sampler_linear.reset();
@@ -481,6 +500,7 @@ VulkanRenderer::~VulkanRenderer()
 
 	destroy_swapchain();
 	destroy_draw_image();
+	destroy_msaa_color_image();
 	destroy_depth_image();
 
 	m_vk.deletion_queue.flush();
@@ -503,6 +523,97 @@ VulkanRenderer::~VulkanRenderer()
 auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 {
 	recreate_swapchain(width, height);
+}
+
+auto VulkanRenderer::set_antialiasing(AntiAliasingKind kind) -> void
+{
+	auto requested_samples = [&](AntiAliasingKind aa) {
+		switch (aa) {
+		case AntiAliasingKind::NONE:
+			return vk::SampleCountFlagBits::e1;
+		case AntiAliasingKind::MSAA_2X:
+			return vk::SampleCountFlagBits::e2;
+		case AntiAliasingKind::MSAA_4X:
+			return vk::SampleCountFlagBits::e4;
+		case AntiAliasingKind::MSAA_8X:
+			return vk::SampleCountFlagBits::e8;
+		}
+		return vk::SampleCountFlagBits::e1;
+	}(kind);
+
+	auto best_supported = [&](vk::SampleCountFlagBits requested) {
+		auto const supported = m_vk.supported_framebuffer_samples;
+
+		auto pick_if_supported = [&](vk::SampleCountFlagBits candidate) {
+			return (supported & candidate) == candidate;
+		};
+
+		if (requested >= vk::SampleCountFlagBits::e64
+		    && pick_if_supported(vk::SampleCountFlagBits::e64)) {
+			return vk::SampleCountFlagBits::e64;
+		}
+		if (requested >= vk::SampleCountFlagBits::e32
+		    && pick_if_supported(vk::SampleCountFlagBits::e32)) {
+			return vk::SampleCountFlagBits::e32;
+		}
+		if (requested >= vk::SampleCountFlagBits::e16
+		    && pick_if_supported(vk::SampleCountFlagBits::e16)) {
+			return vk::SampleCountFlagBits::e16;
+		}
+		if (requested >= vk::SampleCountFlagBits::e8
+		    && pick_if_supported(vk::SampleCountFlagBits::e8)) {
+			return vk::SampleCountFlagBits::e8;
+		}
+		if (requested >= vk::SampleCountFlagBits::e4
+		    && pick_if_supported(vk::SampleCountFlagBits::e4)) {
+			return vk::SampleCountFlagBits::e4;
+		}
+		if (requested >= vk::SampleCountFlagBits::e2
+		    && pick_if_supported(vk::SampleCountFlagBits::e2)) {
+			return vk::SampleCountFlagBits::e2;
+		}
+		return vk::SampleCountFlagBits::e1;
+	}(requested_samples);
+
+	auto kind_for_samples = [](vk::SampleCountFlagBits samples) {
+		switch (samples) {
+		case vk::SampleCountFlagBits::e2:
+			return AntiAliasingKind::MSAA_2X;
+		case vk::SampleCountFlagBits::e4:
+			return AntiAliasingKind::MSAA_4X;
+		case vk::SampleCountFlagBits::e8:
+			return AntiAliasingKind::MSAA_8X;
+		default:
+			return AntiAliasingKind::NONE;
+		}
+	};
+
+	auto const effective_kind = kind_for_samples(best_supported);
+	if (m_vk.antialiasing_kind == effective_kind
+	    && m_vk.msaa_samples == best_supported) {
+		return;
+	}
+
+	if (best_supported != requested_samples) {
+		m_logger.warn("Requested antialiasing {} but using {}",
+		    static_cast<int>(kind), static_cast<int>(effective_kind));
+	}
+
+	m_vk.antialiasing_kind = effective_kind;
+	m_vk.msaa_samples = best_supported;
+
+	if (!m_vk.swapchain || m_vk.swapchain_extent.width == 0
+	    || m_vk.swapchain_extent.height == 0) {
+		return;
+	}
+
+	m_device.waitIdle();
+
+	create_msaa_color_image(
+	    m_vk.swapchain_extent.width, m_vk.swapchain_extent.height);
+	create_depth_image(
+	    m_vk.swapchain_extent.width, m_vk.swapchain_extent.height);
+	pipelines_init();
 }
 
 auto VulkanRenderer::immediate_submit(
@@ -637,6 +748,13 @@ auto VulkanRenderer::vk_init() -> void
 	m_logger.info("Chosen Vulkan physical device: {}",
 	    m_vkb.phys_dev.properties.deviceName);
 
+	auto const props = m_physical_device.getProperties();
+	m_vk.supported_framebuffer_samples
+	    = props.limits.framebufferColorSampleCounts
+	    & props.limits.framebufferDepthSampleCounts;
+	m_vk.msaa_samples = vk::SampleCountFlagBits::e1;
+	m_vk.antialiasing_kind = AntiAliasingKind::NONE;
+
 	vkb::DeviceBuilder device_builder { m_vkb.phys_dev };
 	auto dev_ret { device_builder.build() };
 	if (!dev_ret) {
@@ -672,6 +790,7 @@ auto VulkanRenderer::swapchain_init() -> void
 	SDL_GetWindowSize(m_window, &w, &h);
 	create_swapchain(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 	create_draw_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+	create_msaa_color_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 	create_depth_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
 }
 
@@ -719,26 +838,7 @@ auto VulkanRenderer::sync_init() -> void
 
 auto VulkanRenderer::descriptors_init() -> void
 {
-	std::vector<DescriptorAllocator::PoolSizeRatio> sizes {
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
-	};
-	m_vk.descriptor_allocator.init_pool(m_vkb.dev.device, 10, sizes);
-
-	auto draw_layout_raw
-	    = DescriptorLayoutBuilder()
-	          .add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-	          .build(m_logger, m_vkb.dev.device, VK_SHADER_STAGE_COMPUTE_BIT);
-	m_vk.draw_image_descriptor_layout
-	    = vk::DescriptorSetLayout { draw_layout_raw };
-
-	m_vk.draw_image_descriptors = m_vk.descriptor_allocator.allocate(
-	    m_logger, m_vkb.dev.device, m_vk.draw_image_descriptor_layout);
-
-	update_draw_image_descriptor();
-
 	m_vk.deletion_queue.emplace([&]() {
-		m_vk.descriptor_allocator.destroy_pool(m_vkb.dev.device);
-		m_device.destroyDescriptorSetLayout(m_vk.draw_image_descriptor_layout);
 		m_device.destroyDescriptorSetLayout(
 		    m_vk.gpu_scene_data_descriptor_layout);
 		m_device.destroyDescriptorSetLayout(
@@ -780,32 +880,8 @@ auto VulkanRenderer::descriptors_init() -> void
 
 auto VulkanRenderer::pipelines_init() -> void
 {
-	background_pipelines_init();
 	triangle_pipeline_init();
 	mesh_pipeline_init();
-}
-
-auto VulkanRenderer::background_pipelines_init() -> void
-{
-	Pipeline::Builder builder { m_device, m_logger };
-	std::array layout_handles { m_vk.draw_image_descriptor_layout };
-	builder.set_descriptor_set_layouts(layout_handles);
-
-	uint8_t compute_draw_shader_data[] {
-#embed "gradient_comp.spv"
-	};
-	auto compute_draw_shader { vkutil::load_shader_module(
-		std::span<uint8_t>(
-		    compute_draw_shader_data, sizeof(compute_draw_shader_data)),
-		m_device) };
-	if (!compute_draw_shader) {
-		m_logger.err("Failed to load gradient compute shader");
-	}
-
-	auto stage_ci { vkinit::pipeline_shader_stage(
-		vk::ShaderStageFlagBits::eCompute, compute_draw_shader.get()) };
-
-	m_vk.gradient_pipeline = builder.build_compute(stage_ci);
 }
 
 auto VulkanRenderer::triangle_pipeline_init() -> void
@@ -842,7 +918,8 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 		              triangle_vert_shader.get(), triangle_frag_shader.get())
 		          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 		          .set_polygon_mode(VK_POLYGON_MODE_FILL)
-		          .set_multisampling_none()
+		          .set_multisampling(
+		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
 		          .enable_blending_additive()
 		          .disable_depth_testing()
 		          .set_color_attachment_format(
@@ -897,7 +974,8 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 		          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 		          .set_polygon_mode(VK_POLYGON_MODE_FILL)
 		          .set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
-		          .set_multisampling_none()
+		          .set_multisampling(
+		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
 		          .disable_blending()
 		          .enable_depth_testing()
 		          .set_color_attachment_format(
@@ -1109,15 +1187,22 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    vkBeginCommandBuffer(static_cast<VkCommandBuffer>(cmd),
 	        reinterpret_cast<VkCommandBufferBeginInfo *>(&cmd_begin_info)));
 
-	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral);
+	bool const msaa_enabled = m_vk.msaa_samples != vk::SampleCountFlagBits::e1;
 
-	draw_background(cmd);
+	vkutil::transition_image(cmd, m_vk.draw_image.image, m_vk.draw_image_layout,
+	    vk::ImageLayout::eColorAttachmentOptimal);
+	m_vk.draw_image_layout = vk::ImageLayout::eColorAttachmentOptimal;
 
-	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    vk::ImageLayout::eGeneral, vk::ImageLayout::eColorAttachmentOptimal);
+	if (msaa_enabled) {
+		vkutil::transition_image(cmd, m_vk.msaa_color_image.image,
+		    m_vk.msaa_color_image_layout,
+		    vk::ImageLayout::eColorAttachmentOptimal);
+		m_vk.msaa_color_image_layout = vk::ImageLayout::eColorAttachmentOptimal;
+	}
+
 	vkutil::transition_image(cmd, m_vk.depth_image.image,
-	    vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthAttachmentOptimal);
+	    m_vk.depth_image_layout, vk::ImageLayout::eDepthAttachmentOptimal);
+	m_vk.depth_image_layout = vk::ImageLayout::eDepthAttachmentOptimal;
 
 	gl.begin_drawing(cmd, m_vk.draw_image, &m_vk.depth_image);
 	if (record) {
@@ -1125,9 +1210,9 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	}
 	gl.end_drawing();
 
-	vkutil::transition_image(cmd, m_vk.draw_image.image,
-	    vk::ImageLayout::eColorAttachmentOptimal,
+	vkutil::transition_image(cmd, m_vk.draw_image.image, m_vk.draw_image_layout,
 	    vk::ImageLayout::eTransferSrcOptimal);
+	m_vk.draw_image_layout = vk::ImageLayout::eTransferSrcOptimal;
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images.at(swapchain_image_idx),
 	    vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
@@ -1178,18 +1263,6 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 		return;
 	}
 	VK_CHECK(m_logger, present_result);
-}
-
-auto VulkanRenderer::draw_background(vk::CommandBuffer cmd) -> void
-{
-	cmd.bindPipeline(
-	    vk::PipelineBindPoint::eCompute, m_vk.gradient_pipeline.get());
-	auto compute_set = vk::DescriptorSet { m_vk.draw_image_descriptors };
-	cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-	    m_vk.gradient_pipeline.get_layout(), 0, compute_set, {});
-	cmd.dispatch(
-	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.width / 16.0)),
-	    static_cast<uint32_t>(std::ceil(m_vk.draw_extent.height / 16.0)), 1);
 }
 
 auto VulkanRenderer::draw_imgui(
@@ -1260,10 +1333,26 @@ auto VulkanRenderer::create_draw_image(uint32_t width, uint32_t height) -> void
 
 	auto const flags { vk::ImageUsageFlagBits::eTransferSrc
 		| vk::ImageUsageFlagBits::eTransferDst
-		| vk::ImageUsageFlagBits::eStorage
+		| vk::ImageUsageFlagBits::eSampled
 		| vk::ImageUsageFlagBits::eColorAttachment };
 	m_vk.draw_image = create_image(
 	    { width, height, 1 }, vk::Format::eR16G16B16A16Sfloat, flags);
+	m_vk.draw_image_layout = vk::ImageLayout::eUndefined;
+}
+
+auto VulkanRenderer::create_msaa_color_image(uint32_t width, uint32_t height)
+    -> void
+{
+	destroy_msaa_color_image();
+
+	if (m_vk.msaa_samples == vk::SampleCountFlagBits::e1) {
+		return;
+	}
+
+	auto const flags { vk::ImageUsageFlagBits::eColorAttachment };
+	m_vk.msaa_color_image = create_image(
+	    { width, height, 1 }, m_vk.draw_image.format, flags, m_vk.msaa_samples);
+	m_vk.msaa_color_image_layout = vk::ImageLayout::eUndefined;
 }
 
 auto VulkanRenderer::create_depth_image(uint32_t width, uint32_t height) -> void
@@ -1273,8 +1362,9 @@ auto VulkanRenderer::create_depth_image(uint32_t width, uint32_t height) -> void
 	auto const flags { vk::ImageUsageFlagBits::eTransferSrc
 		| vk::ImageUsageFlagBits::eTransferDst
 		| vk::ImageUsageFlagBits::eDepthStencilAttachment };
-	m_vk.depth_image
-	    = create_image({ width, height, 1 }, vk::Format::eD32Sfloat, flags);
+	m_vk.depth_image = create_image(
+	    { width, height, 1 }, vk::Format::eD32Sfloat, flags, m_vk.msaa_samples);
+	m_vk.depth_image_layout = vk::ImageLayout::eUndefined;
 }
 
 auto VulkanRenderer::destroy_depth_image() -> void
@@ -1288,15 +1378,8 @@ auto VulkanRenderer::destroy_depth_image() -> void
 		m_vk.depth_image.image = vk::Image {};
 		m_vk.depth_image.allocation = nullptr;
 		m_vk.depth_image.extent = vk::Extent3D { 0, 0, 0 };
+		m_vk.depth_image_layout = vk::ImageLayout::eUndefined;
 	}
-}
-
-auto VulkanRenderer::update_draw_image_descriptor() -> void
-{
-	DescriptorWriter()
-	    .write_image(0, m_vk.draw_image.image_view, VK_NULL_HANDLE,
-	        VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-	    .update_set(m_vkb.dev.device, m_vk.draw_image_descriptors);
 }
 
 auto VulkanRenderer::destroy_draw_image() -> void
@@ -1310,6 +1393,22 @@ auto VulkanRenderer::destroy_draw_image() -> void
 		m_vk.draw_image.image = vk::Image {};
 		m_vk.draw_image.allocation = nullptr;
 		m_vk.draw_image.extent = vk::Extent3D { 0, 0, 0 };
+		m_vk.draw_image_layout = vk::ImageLayout::eUndefined;
+	}
+}
+
+auto VulkanRenderer::destroy_msaa_color_image() -> void
+{
+	if (m_vk.msaa_color_image.image) {
+		m_device.destroyImageView(m_vk.msaa_color_image.image_view);
+		m_vk.msaa_color_image.image_view = vk::ImageView {};
+		vmaDestroyImage(m_vk.allocator,
+		    static_cast<VkImage>(m_vk.msaa_color_image.image),
+		    m_vk.msaa_color_image.allocation);
+		m_vk.msaa_color_image.image = vk::Image {};
+		m_vk.msaa_color_image.allocation = nullptr;
+		m_vk.msaa_color_image.extent = vk::Extent3D { 0, 0, 0 };
+		m_vk.msaa_color_image_layout = vk::ImageLayout::eUndefined;
 	}
 }
 
@@ -1320,6 +1419,7 @@ auto VulkanRenderer::recreate_swapchain(uint32_t width, uint32_t height) -> void
 	if (width == 0 || height == 0) {
 		destroy_swapchain();
 		destroy_draw_image();
+		destroy_msaa_color_image();
 		destroy_depth_image();
 		m_vk.swapchain_extent = vk::Extent2D { 0, 0 };
 		return;
@@ -1327,12 +1427,13 @@ auto VulkanRenderer::recreate_swapchain(uint32_t width, uint32_t height) -> void
 
 	destroy_swapchain();
 	destroy_draw_image();
+	destroy_msaa_color_image();
 	destroy_depth_image();
 
 	create_swapchain(width, height);
 	create_draw_image(width, height);
+	create_msaa_color_image(width, height);
 	create_depth_image(width, height);
-	update_draw_image_descriptor();
 }
 
 auto VulkanRenderer::destroy_swapchain() -> void
@@ -1351,13 +1452,14 @@ auto VulkanRenderer::destroy_swapchain() -> void
 }
 
 auto VulkanRenderer::create_image(vk::Extent3D size, vk::Format format,
-    vk::ImageUsageFlags flags, bool mipmapped) -> AllocatedImage
+    vk::ImageUsageFlags flags, vk::SampleCountFlagBits samples, bool mipmapped)
+    -> AllocatedImage
 {
 	AllocatedImage new_image;
 	new_image.format = format;
 	new_image.extent = size;
 
-	auto img_ci { vkinit::image_create_info(format, flags, size) };
+	auto img_ci { vkinit::image_create_info(format, flags, size, samples) };
 	if (mipmapped) {
 		img_ci.mipLevels = static_cast<uint32_t>(std::floor(
 		                       std::log2(std::max(size.width, size.height))))
@@ -1418,7 +1520,7 @@ auto VulkanRenderer::create_image(void const *data, vk::Extent3D size,
 		create_image(size, format,
 		    flags | vk::ImageUsageFlagBits::eTransferDst
 		        | vk::ImageUsageFlagBits::eTransferSrc,
-		    mipmapped),
+		    vk::SampleCountFlagBits::e1, mipmapped),
 	};
 
 	immediate_submit([&](vk::CommandBuffer cmd) {

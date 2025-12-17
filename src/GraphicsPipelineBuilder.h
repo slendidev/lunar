@@ -25,6 +25,8 @@ struct GraphicsPipelineBuilder {
 	auto set_cull_mode(VkCullModeFlags cull_mode, VkFrontFace front_face)
 	    -> GraphicsPipelineBuilder &;
 	auto set_multisampling_none() -> GraphicsPipelineBuilder &;
+	auto set_multisampling(VkSampleCountFlagBits samples)
+	    -> GraphicsPipelineBuilder &;
 	auto disable_blending() -> GraphicsPipelineBuilder &;
 	auto enable_blending_additive() -> GraphicsPipelineBuilder &;
 	auto enable_blending_alpha_blend() -> GraphicsPipelineBuilder &;

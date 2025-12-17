@@ -310,6 +310,8 @@ auto Application::run() -> void
 
 		ImGui::Render();
 
+		m_renderer->set_antialiasing(VulkanRenderer::AntiAliasingKind::MSAA_8X);
+
 		m_renderer->render([&](VulkanRenderer::GL &gl) {
 			auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
 				smath::Vec3 { 0.0f, 0.0f, 0.0f },

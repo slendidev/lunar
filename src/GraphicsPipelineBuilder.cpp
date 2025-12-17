@@ -80,8 +80,14 @@ auto GraphicsPipelineBuilder::set_cull_mode(VkCullModeFlags cull_mode,
 auto GraphicsPipelineBuilder::set_multisampling_none()
     -> GraphicsPipelineBuilder &
 {
+	return set_multisampling(VK_SAMPLE_COUNT_1_BIT);
+}
+
+auto GraphicsPipelineBuilder::set_multisampling(VkSampleCountFlagBits samples)
+    -> GraphicsPipelineBuilder &
+{
 	m_multisampling.sampleShadingEnable = VK_FALSE;
-	m_multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	m_multisampling.rasterizationSamples = samples;
 	m_multisampling.minSampleShading = 1.0f;
 	m_multisampling.pSampleMask = nullptr;
 	m_multisampling.alphaToCoverageEnable = VK_FALSE;

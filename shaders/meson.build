@@ -14,7 +14,6 @@ else
 endif
 
 shader_sources = files(
-	'gradient.comp',
 	'triangle.frag',
 	'triangle.vert',
 	'triangle_mesh.frag',

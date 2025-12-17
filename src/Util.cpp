@@ -89,7 +89,7 @@ auto load_shader_module(std::span<uint8_t> spirv_data, vk::Device device)
 namespace vkinit {
 
 auto image_create_info(vk::Format format, vk::ImageUsageFlags usage_flags,
-    vk::Extent3D extent) -> vk::ImageCreateInfo
+    vk::Extent3D extent, vk::SampleCountFlagBits samples) -> vk::ImageCreateInfo
 {
 	vk::ImageCreateInfo info {};
 	info.imageType = vk::ImageType::e2D;
@@ -97,7 +97,7 @@ auto image_create_info(vk::Format format, vk::ImageUsageFlags usage_flags,
 	info.extent = extent;
 	info.mipLevels = 1;
 	info.arrayLayers = 1;
-	info.samples = vk::SampleCountFlagBits::e1;
+	info.samples = samples;
 	info.tiling = vk::ImageTiling::eOptimal;
 	info.usage = usage_flags;
 	return info;

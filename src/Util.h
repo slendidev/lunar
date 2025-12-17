@@ -52,7 +52,9 @@ auto load_shader_module(std::span<uint8_t> spirv_data, vk::Device device)
 namespace vkinit {
 
 auto image_create_info(vk::Format format, vk::ImageUsageFlags usage_flags,
-    vk::Extent3D extent) -> vk::ImageCreateInfo;
+    vk::Extent3D extent,
+    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1)
+    -> vk::ImageCreateInfo;
 auto imageview_create_info(vk::Format format, vk::Image image,
     vk::ImageAspectFlags aspect_flags) -> vk::ImageViewCreateInfo;
 auto command_buffer_submit_info(vk::CommandBuffer cmd)
