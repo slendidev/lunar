@@ -2,7 +2,6 @@
 
 #include <span>
 
-#include <vulkan/vk_enum_string_helper.h>
 #include <vulkan/vulkan.hpp>
 
 template<typename F> struct privDefer {

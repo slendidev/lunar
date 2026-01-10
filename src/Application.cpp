@@ -30,6 +30,10 @@
 #include "Util.h"
 #include "VulkanRenderer.h"
 
+#if defined(TRACY_ENABLE)
+#	include <tracy/Tracy.hpp>
+#endif
+
 namespace {
 
 int open_restricted(char const *path, int flags, void * /*user_data*/)
@@ -424,6 +428,9 @@ auto Application::run() -> void
 	uint64_t last { 0 };
 	float fps { 0.0f };
 	while (m_running) {
+#if defined(TRACY_ENABLE)
+		ZoneScopedN("Frame");
+#endif
 		uint64_t now { SDL_GetTicks() };
 		uint64_t dt { now - last };
 		float dt_seconds { static_cast<float>(dt) / 1000.0f };
@@ -613,6 +620,9 @@ auto Application::run() -> void
 		ImGui::Render();
 
 		m_renderer->render([&](VulkanRenderer::GL &gl) {
+#if defined(TRACY_ENABLE)
+			ZoneScopedN("Render");
+#endif
 			auto view { smath::matrix_look_at(
 				m_camera.position, m_camera.target, m_camera.up) };
 			auto const draw_extent = m_renderer->draw_extent();
@@ -670,6 +680,9 @@ auto Application::run() -> void
 
 			gl.draw_sphere(m_camera.target, 0.01f);
 		});
+#if defined(TRACY_ENABLE)
+		FrameMark;
+#endif
 	}
 }
 

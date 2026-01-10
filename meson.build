@@ -18,13 +18,13 @@ fastgltf = cmake.subproject('fastgltf', options: fastgltf_opts)
 
 cc = meson.get_compiler('cpp')
 
-wayland_dep = dependency('wayland-server')
-vulkan_dep = dependency('vulkan')
-openxr_dep = dependency('openxr')
-zlib_dep = dependency('zlib')
-sdl3_dep = dependency('sdl3')
-libinput_dep = dependency('libinput')
-libudev_dep = dependency('libudev')
+wayland_dep = dependency('wayland-server', include_type: 'system')
+vulkan_dep = dependency('vulkan', include_type: 'system')
+openxr_dep = dependency('openxr', include_type: 'system')
+zlib_dep = dependency('zlib', include_type: 'system')
+sdl3_dep = dependency('sdl3', include_type: 'system')
+libinput_dep = dependency('libinput', include_type: 'system')
+libudev_dep = dependency('libudev', include_type: 'system')
 imgui_src = files(
 	'thirdparty/imgui/imgui.cpp',
 	'thirdparty/imgui/imgui_draw.cpp',
@@ -37,9 +37,25 @@ fastgltf_dep = fastgltf.dependency('fastgltf')
 
 vkbootstrap_dev = get_option('vkbootstrap_dev')
 vkbootstrap_lib = get_option('vkbootstrap_lib')
+tracy_enable = get_option('tracy_enable')
+
+if tracy_enable and get_option('buildtype') != 'debugoptimized'
+	warning('Profiling builds should set --buildtype=debugoptimized')
+endif
+
+tracy = disabler()
+if tracy_enable
+	tracy_proj = subproject('tracy', default_options: [
+		'default_library=static',
+		'warning_level=0',
+		'werror=false',
+	])
+	tracy = tracy_proj.get_variable('tracy_dep')
+endif
 
 vkbootstrap_inc = include_directories(
-	join_paths(vkbootstrap_dev, 'include')
+	join_paths(vkbootstrap_dev, 'include'),
+	is_system: true,
 )
 
 vkbootstrap_dep = cc.find_library(
@@ -78,6 +94,7 @@ add_project_arguments(
 		'-Wno-exit-time-destructors',
 		'-Wno-zero-as-null-pointer-constant',
 		'-Wno-unused-macros',
+		'-Wno-reserved-macro-identifier',
 		'-Wno-suggest-override',
 		'-Wno-macro-redefined',
 		'-DVULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE',
@@ -114,6 +131,21 @@ imgui_lib = static_library('imgui',
 	],
 )
 
+exe_deps = [
+	wayland_dep,
+	vulkan_dep,
+	openxr_dep,
+	vkbootstrap_dep,
+	zlib_dep,
+	sdl3_dep,
+	fastgltf_dep,
+	libinput_dep,
+	libudev_dep,
+]
+if tracy_enable
+	exe_deps += tracy
+endif
+
 exe = executable('vr-compositor',
 	[
 		'src/main.cpp',
@@ -136,18 +168,8 @@ exe = executable('vr-compositor',
 		'thirdparty/smath/include'
 	],
 	link_with: imgui_lib,
-	dependencies: [
-		wayland_dep,
-		vulkan_dep,
-		openxr_dep,
-		vkbootstrap_dep,
-		zlib_dep,
-		sdl3_dep,
-		fastgltf_dep,
-		libinput_dep,
-		libudev_dep,
-	],
+	dependencies: exe_deps,
 	cpp_args: [
-		'--embed-dir=' + join_paths(meson.project_build_root(), 'shaders')
+		'--embed-dir=' + join_paths(meson.project_build_root(), 'shaders'),
 	],
 )

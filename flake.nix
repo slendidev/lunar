@@ -51,6 +51,7 @@
                   doxygen
                   gtest
                   cppcheck
+                  tracy
                 ]
                 ++ buildInputs
                 ++ nativeBuildInputs
