@@ -487,12 +487,12 @@ auto Application::run() -> void
 
 		bool rotated_this_frame { false };
 		if (mouse_captured()) {
-			constexpr float mouse_sensitivity { 0.0005f };
-			constexpr float phi_epsilon { 0.002f };
+			constexpr float phi_epsilon { smath::deg(5.0f) };
 
 			m_cursor.theta
-			    -= static_cast<float>(m_mouse_dx) * mouse_sensitivity;
-			m_cursor.phi -= static_cast<float>(m_mouse_dy) * mouse_sensitivity;
+			    += static_cast<float>(m_mouse_dx) * m_mouse_sensitivity;
+			m_cursor.phi
+			    += static_cast<float>(m_mouse_dy) * m_mouse_sensitivity;
 			m_cursor.phi = std::clamp(m_cursor.phi, phi_epsilon,
 			    std::numbers::pi_v<float> - phi_epsilon);
 			rotated_this_frame = (m_mouse_dx != 0.0 || m_mouse_dy != 0.0);
@@ -505,10 +505,7 @@ auto Application::run() -> void
 		if (look_dir.magnitude() == 0.0f)
 			look_dir = smath::Vec3 { 0.0f, 0.0f, -1.0f };
 		smath::Vec3 const world_up { 0.0f, 1.0f, 0.0f };
-		auto up_basis = world_up;
-		if (std::abs(look_dir.dot(up_basis)) > 0.99f)
-			up_basis = smath::Vec3 { 0.0f, 0.0f, 1.0f };
-		auto right { look_dir.cross(up_basis).normalized_safe() };
+		auto right { look_dir.cross(world_up).normalized_safe() };
 		if (right.magnitude() == 0.0f)
 			right = smath::Vec3 { 1.0f, 0.0f, 0.0f };
 		auto camera_up { right.cross(look_dir).normalized_safe() };
@@ -537,12 +534,10 @@ auto Application::run() -> void
 
 		if (!m_show_imgui) {
 			m_camera.up = camera_up;
-			if (rotated_this_frame) {
-				auto const distance = target_distance > 0.0f
-				    ? target_distance
-				    : std::max(1.0f, m_cursor.r);
-				m_camera.target = m_camera.position + look_dir * distance;
-			}
+			auto const distance = target_distance > 0.0f
+			    ? target_distance
+			    : std::max(1.0f, m_cursor.r);
+			m_camera.target = m_camera.position + look_dir * distance;
 		}
 
 		m_mouse_dx = 0.0;
@@ -610,6 +605,8 @@ auto Application::run() -> void
 				        ImGuiTreeNodeFlags_Framed
 				            | ImGuiTreeNodeFlags_SpanAvailWidth
 				            | ImGuiTreeNodeFlags_DefaultOpen)) {
+					ImGui::SliderFloat("Mouse sensitivity",
+					    &m_mouse_sensitivity, 0.0001f, 0.01f, "%.4f");
 					ImGui::DragFloat4("Pos", m_camera.position.data());
 					ImGui::DragFloat4("Target", m_camera.target.data());
 					ImGui::DragFloat4("Up", m_camera.up.data());
@@ -678,6 +675,7 @@ auto Application::run() -> void
 			gl.draw_rectangle(
 			    { 0, 0.5f }, { 0.5f, 0.5f }, { Colors::TEAL, 1.0f });
 
+			gl.set_transform(view_projection);
 			gl.draw_sphere(m_camera.target, 0.01f);
 		});
 #if defined(TRACY_ENABLE)

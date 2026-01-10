@@ -53,6 +53,7 @@ private:
 	double m_mouse_y { 0.0 };
 	double m_mouse_dx { 0.0 };
 	double m_mouse_dy { 0.0 };
+	float m_mouse_sensitivity { 0.001f };
 
 	std::array<bool, KEY_MAX + 1> m_key_state {};
 
