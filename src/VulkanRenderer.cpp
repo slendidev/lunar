@@ -341,6 +341,73 @@ auto VulkanRenderer::GL::draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
 	end();
 }
 
+auto VulkanRenderer::GL::draw_sphere(smath::Vec3 center, float radius,
+    int rings, int segments, std::optional<smath::Vec4> sphere_color) -> void
+{
+	assert(m_drawing && "begin_drawing must be called first");
+
+	if (radius <= 0.0f)
+		return;
+
+	if (rings < 2)
+		rings = 2;
+	if (segments < 3)
+		segments = 3;
+
+	float const pi = 3.14159265358979323846f;
+
+	// Use caller color if provided, otherwise keep current GL color state.
+	if (sphere_color.has_value())
+		color(*sphere_color);
+
+	// Build as latitude strips
+	for (int y = 0; y < rings; y++) {
+		float const v0 = static_cast<float>(y) / static_cast<float>(rings);
+		float const v1 = static_cast<float>(y + 1) / static_cast<float>(rings);
+
+		float const theta0 = v0 * pi;
+		float const theta1 = v1 * pi;
+
+		float const sin0 = std::sin(theta0);
+		float const cos0 = std::cos(theta0);
+		float const sin1 = std::sin(theta1);
+		float const cos1 = std::cos(theta1);
+
+		begin(GeometryKind::TriangleStrip);
+
+		for (int x = 0; x <= segments; x++) {
+			float const u
+			    = static_cast<float>(x) / static_cast<float>(segments);
+			float const phi = u * (2.0f * pi);
+
+			float const sp = std::sin(phi);
+			float const cp = std::cos(phi);
+
+			// Vertex on ring y+1
+			{
+				smath::Vec3 n { sin1 * cp, cos1, sin1 * sp };
+				normal(n);
+				uv(smath::Vec2 { u, 1.0f - v1 });
+
+				smath::Vec3 p = center + n * radius;
+				vert(p);
+			}
+
+			// Vertex on ring y
+			{
+				smath::Vec3 n { sin0 * cp, cos0, sin0 * sp };
+				normal(n);
+				uv(smath::Vec2 { u, 1.0f - v0 });
+
+				smath::Vec3 p = center + n * radius;
+				vert(p);
+			}
+		}
+
+		end();
+	}
+}
+
 auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
     smath::Mat4 const &transform, uint32_t index_count, uint32_t first_index,
     int32_t vertex_offset) -> void
@@ -530,7 +597,7 @@ auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 auto VulkanRenderer::set_antialiasing(AntiAliasingKind kind) -> void
 {
 	enqueue_render_command(RenderCommand {
-		RenderCommand::SetAntiAliasing { kind },
+	    RenderCommand::SetAntiAliasing { kind },
 	});
 }
 

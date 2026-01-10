@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <fcntl.h>
 #include <iostream>
+#include <numbers>
 #include <optional>
 #include <print>
 #include <stdexcept>
@@ -122,6 +124,40 @@ auto linux_key_to_imgui(uint32_t keycode) -> std::optional<ImGuiKey>
 		return ImGuiKey_F11;
 	case KEY_F12:
 		return ImGuiKey_F12;
+	case KEY_KP0:
+		return ImGuiKey_Keypad0;
+	case KEY_KP1:
+		return ImGuiKey_Keypad1;
+	case KEY_KP2:
+		return ImGuiKey_Keypad2;
+	case KEY_KP3:
+		return ImGuiKey_Keypad3;
+	case KEY_KP4:
+		return ImGuiKey_Keypad4;
+	case KEY_KP5:
+		return ImGuiKey_Keypad5;
+	case KEY_KP6:
+		return ImGuiKey_Keypad6;
+	case KEY_KP7:
+		return ImGuiKey_Keypad7;
+	case KEY_KP8:
+		return ImGuiKey_Keypad8;
+	case KEY_KP9:
+		return ImGuiKey_Keypad9;
+	case KEY_KPDOT:
+		return ImGuiKey_KeypadDecimal;
+	case KEY_KPENTER:
+		return ImGuiKey_KeypadEnter;
+	case KEY_KPPLUS:
+		return ImGuiKey_KeypadAdd;
+	case KEY_KPMINUS:
+		return ImGuiKey_KeypadSubtract;
+	case KEY_KPASTERISK:
+		return ImGuiKey_KeypadMultiply;
+	case KEY_KPSLASH:
+		return ImGuiKey_KeypadDivide;
+	case KEY_KPEQUAL:
+		return ImGuiKey_KeypadEqual;
 	case KEY_0:
 		return ImGuiKey_0;
 	case KEY_1:
@@ -199,6 +235,142 @@ auto linux_key_to_imgui(uint32_t keycode) -> std::optional<ImGuiKey>
 	}
 }
 
+auto linux_key_to_char(uint32_t keycode, bool shift) -> std::optional<char32_t>
+{
+	switch (keycode) {
+	case KEY_0:
+		return shift ? U')' : U'0';
+	case KEY_1:
+		return shift ? U'!' : U'1';
+	case KEY_2:
+		return shift ? U'@' : U'2';
+	case KEY_3:
+		return shift ? U'#' : U'3';
+	case KEY_4:
+		return shift ? U'$' : U'4';
+	case KEY_5:
+		return shift ? U'%' : U'5';
+	case KEY_6:
+		return shift ? U'^' : U'6';
+	case KEY_7:
+		return shift ? U'&' : U'7';
+	case KEY_8:
+		return shift ? U'*' : U'8';
+	case KEY_9:
+		return shift ? U'(' : U'9';
+	case KEY_KP0:
+		return U'0';
+	case KEY_KP1:
+		return U'1';
+	case KEY_KP2:
+		return U'2';
+	case KEY_KP3:
+		return U'3';
+	case KEY_KP4:
+		return U'4';
+	case KEY_KP5:
+		return U'5';
+	case KEY_KP6:
+		return U'6';
+	case KEY_KP7:
+		return U'7';
+	case KEY_KP8:
+		return U'8';
+	case KEY_KP9:
+		return U'9';
+	case KEY_Q:
+		return shift ? U'Q' : U'q';
+	case KEY_W:
+		return shift ? U'W' : U'w';
+	case KEY_E:
+		return shift ? U'E' : U'e';
+	case KEY_R:
+		return shift ? U'R' : U'r';
+	case KEY_T:
+		return shift ? U'T' : U't';
+	case KEY_Y:
+		return shift ? U'Y' : U'y';
+	case KEY_U:
+		return shift ? U'U' : U'u';
+	case KEY_I:
+		return shift ? U'I' : U'i';
+	case KEY_O:
+		return shift ? U'O' : U'o';
+	case KEY_P:
+		return shift ? U'P' : U'p';
+	case KEY_A:
+		return shift ? U'A' : U'a';
+	case KEY_S:
+		return shift ? U'S' : U's';
+	case KEY_D:
+		return shift ? U'D' : U'd';
+	case KEY_F:
+		return shift ? U'F' : U'f';
+	case KEY_G:
+		return shift ? U'G' : U'g';
+	case KEY_H:
+		return shift ? U'H' : U'h';
+	case KEY_J:
+		return shift ? U'J' : U'j';
+	case KEY_K:
+		return shift ? U'K' : U'k';
+	case KEY_L:
+		return shift ? U'L' : U'l';
+	case KEY_Z:
+		return shift ? U'Z' : U'z';
+	case KEY_X:
+		return shift ? U'X' : U'x';
+	case KEY_C:
+		return shift ? U'C' : U'c';
+	case KEY_V:
+		return shift ? U'V' : U'v';
+	case KEY_B:
+		return shift ? U'B' : U'b';
+	case KEY_N:
+		return shift ? U'N' : U'n';
+	case KEY_M:
+		return shift ? U'M' : U'm';
+	case KEY_SPACE:
+		return U' ';
+	case KEY_MINUS:
+		return shift ? U'_' : U'-';
+	case KEY_EQUAL:
+		return shift ? U'+' : U'=';
+	case KEY_LEFTBRACE:
+		return shift ? U'{' : U'[';
+	case KEY_RIGHTBRACE:
+		return shift ? U'}' : U']';
+	case KEY_BACKSLASH:
+		return shift ? U'|' : U'\\';
+	case KEY_SEMICOLON:
+		return shift ? U':' : U';';
+	case KEY_APOSTROPHE:
+		return shift ? U'"' : U'\'';
+	case KEY_GRAVE:
+		return shift ? U'~' : U'`';
+	case KEY_COMMA:
+		return shift ? U'<' : U',';
+	case KEY_DOT:
+		return shift ? U'>' : U'.';
+	case KEY_SLASH:
+		return shift ? U'?' : U'/';
+	case KEY_KPDOT:
+		return U'.';
+	case KEY_KPPLUS:
+		return U'+';
+	case KEY_KPMINUS:
+		return U'-';
+	case KEY_KPASTERISK:
+		return U'*';
+	case KEY_KPSLASH:
+		return U'/';
+	case KEY_KPEQUAL:
+		return U'=';
+	default:
+		return std::nullopt;
+	}
+}
+
 } // namespace
 
 namespace Lunar {
@@ -226,6 +398,8 @@ Application::Application()
 	m_logger.info("App init done!");
 
 	m_renderer->set_antialiasing(VulkanRenderer::AntiAliasingKind::MSAA_4X);
+
+	m_cursor = PolarCoordinate::from_vec3(m_camera.target - m_camera.position);
 }
 
 Application::~Application()
@@ -252,6 +426,7 @@ auto Application::run() -> void
 	while (m_running) {
 		uint64_t now { SDL_GetTicks() };
 		uint64_t dt { now - last };
+		float dt_seconds { static_cast<float>(dt) / 1000.0f };
 		last = now;
 
 		if (dt > 0)
@@ -273,6 +448,8 @@ auto Application::run() -> void
 			} else if (e.type == SDL_EVENT_MOUSE_MOTION) {
 				m_mouse_x = e.motion.x;
 				m_mouse_y = e.motion.y;
+				m_mouse_dx = e.motion.xrel;
+				m_mouse_dy = e.motion.yrel;
 				forward_to_imgui = true;
 			} else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
 			    || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
@@ -289,25 +466,118 @@ auto Application::run() -> void
 				ImGui_ImplSDL3_ProcessEvent(&e);
 		}
 
+		auto const target_offset { m_camera.target - m_camera.position };
+		auto const target_distance { target_offset.magnitude() };
+		auto const target_polar { PolarCoordinate::from_vec3(target_offset) };
+		// Keep cursor angles in sync with externally-updated targets so view
+		// aligns to the target direction. Preserve radius when the target sits
+		// on top of the camera to avoid collapsing it.
+		if (target_distance > 0.0f) {
+			m_cursor.r = target_distance;
+			m_cursor.theta = target_polar.theta;
+			m_cursor.phi = target_polar.phi;
+		}
+
+		bool rotated_this_frame { false };
+		if (mouse_captured()) {
+			constexpr float mouse_sensitivity { 0.0005f };
+			constexpr float phi_epsilon { 0.002f };
+
+			m_cursor.theta
+			    -= static_cast<float>(m_mouse_dx) * mouse_sensitivity;
+			m_cursor.phi -= static_cast<float>(m_mouse_dy) * mouse_sensitivity;
+			m_cursor.phi = std::clamp(m_cursor.phi, phi_epsilon,
+			    std::numbers::pi_v<float> - phi_epsilon);
+			rotated_this_frame = (m_mouse_dx != 0.0 || m_mouse_dy != 0.0);
+		}
+
+		auto look_dir { m_cursor.to_vec3().normalized_safe() };
+		if (!rotated_this_frame && target_distance > 0.0f) {
+			look_dir = target_offset.normalized_safe();
+		}
+		if (look_dir.magnitude() == 0.0f)
+			look_dir = smath::Vec3 { 0.0f, 0.0f, -1.0f };
+		smath::Vec3 const world_up { 0.0f, 1.0f, 0.0f };
+		auto up_basis = world_up;
+		if (std::abs(look_dir.dot(up_basis)) > 0.99f)
+			up_basis = smath::Vec3 { 0.0f, 0.0f, 1.0f };
+		auto right { look_dir.cross(up_basis).normalized_safe() };
+		if (right.magnitude() == 0.0f)
+			right = smath::Vec3 { 1.0f, 0.0f, 0.0f };
+		auto camera_up { right.cross(look_dir).normalized_safe() };
+		if (camera_up.magnitude() == 0.0f)
+			camera_up = world_up;
+
+		smath::Vec3 move_dir {};
+		if (is_key_pressed(KEY_W))
+			move_dir += look_dir;
+		if (is_key_pressed(KEY_S))
+			move_dir -= look_dir;
+		if (is_key_pressed(KEY_D))
+			move_dir += right;
+		if (is_key_pressed(KEY_A))
+			move_dir -= right;
+		if (is_key_pressed(KEY_SPACE))
+			move_dir += world_up;
+		if (is_key_pressed(KEY_LEFTSHIFT))
+			move_dir -= world_up;
+
+		if (move_dir.magnitude() > 0.0f) {
+			constexpr float move_speed { 10.0f };
+			move_dir = move_dir.normalized_safe();
+			m_camera.position += move_dir * (move_speed * dt_seconds);
+		}
+
+		if (!m_show_imgui) {
+			m_camera.up = camera_up;
+			if (rotated_this_frame) {
+				auto const distance = target_distance > 0.0f
+				    ? target_distance
+				    : std::max(1.0f, m_cursor.r);
+				m_camera.target = m_camera.position + look_dir * distance;
+			}
+		}
+
+		m_mouse_dx = 0.0;
+		m_mouse_dy = 0.0;
+
 		ImGui_ImplSDL3_NewFrame();
 		ImGui_ImplVulkan_NewFrame();
 
 		ImGui::NewFrame();
 
+		ImGui::SetNextWindowSize({ 300, 100 });
+		ImGui::SetNextWindowPos({ 0, 0 });
+		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
+		if (ImGui::Begin("Debug Info", nullptr,
+		        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+			defer(ImGui::End());
+
+			ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
+			ImGui::Text("%s",
+			    std::format("Cam pos: ({:.2f}, {:.2f}, {:.2f})",
+			        m_camera.position.x(), m_camera.position.y(),
+			        m_camera.position.z())
+			        .c_str());
+			ImGui::Text("%s",
+			    std::format("Cam tgt: ({:.2f}, {:.2f}, {:.2f})",
+			        m_camera.target.x(), m_camera.target.y(),
+			        m_camera.target.z())
+			        .c_str());
+			ImGui::Text("%s",
+			    std::format("Cam up:  ({:.2f}, {:.2f}, {:.2f})",
+			        m_camera.up.x(), m_camera.up.y(), m_camera.up.z())
+			        .c_str());
+			ImGui::Text("%s",
+			    std::format("Cursor r/theta/phi: {:.2f}, {:.2f}, {:.2f}",
+			        m_cursor.r, m_cursor.theta, m_cursor.phi)
+			        .c_str());
+		}
+		ImGui::PopStyleColor();
+
 		if (m_show_imgui) {
 			ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
 			ImGui::ShowDemoWindow();
-
-			ImGui::SetNextWindowSize({ 100, 50 });
-			ImGui::SetNextWindowPos({ 0, 0 });
-			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
-			if (ImGui::Begin("Debug Info", nullptr,
-			        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
-				defer(ImGui::End());
-
-				ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
-			}
-			ImGui::PopStyleColor();
 
 			ImGui::SetNextWindowSize({ 300, -1 }, ImGuiCond_Once);
 			if (ImGui::Begin("Fun menu")) {
@@ -328,36 +598,47 @@ auto Application::run() -> void
 					    static_cast<VulkanRenderer::AntiAliasingKind>(
 					        selected_item));
 				}
+
+				if (ImGui::CollapsingHeader("Camera",
+				        ImGuiTreeNodeFlags_Framed
+				            | ImGuiTreeNodeFlags_SpanAvailWidth
+				            | ImGuiTreeNodeFlags_DefaultOpen)) {
+					ImGui::DragFloat4("Pos", m_camera.position.data());
+					ImGui::DragFloat4("Target", m_camera.target.data());
+					ImGui::DragFloat4("Up", m_camera.up.data());
+				}
 			}
 		}
 
 		ImGui::Render();
 
 		m_renderer->render([&](VulkanRenderer::GL &gl) {
-			auto view { smath::matrix_look_at(smath::Vec3 { 0.0f, 0.0f, 3.0f },
-				smath::Vec3 { 0.0f, 0.0f, 0.0f },
-				smath::Vec3 { 0.0f, 1.0f, 0.0f }, false) };
+			auto view { smath::matrix_look_at(
+				m_camera.position, m_camera.target, m_camera.up) };
 			auto const draw_extent = m_renderer->draw_extent();
 			auto const aspect = draw_extent.height == 0
 			    ? 1.0f
 			    : static_cast<float>(draw_extent.width)
 			        / static_cast<float>(draw_extent.height);
 			auto projection { smath::matrix_perspective(
-				smath::deg(70.0f), aspect, 0.1f, 10000.0f) };
+				m_camera.fovy, aspect, 0.1f, 10000.0f) };
 			projection[1][1] *= -1;
 			auto view_projection { projection * view };
 
-			auto rect_model { smath::scale(
-				smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
-				smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
+			// auto rect_model { smath::scale(
+			//	smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
+			//	smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
 
-			gl.set_transform(view_projection * rect_model);
+			// gl.set_transform(view_projection * rect_model);
+			gl.set_transform(view_projection);
 
 			gl.set_texture();
 			auto const &meshes { m_renderer->test_meshes() };
 			if (meshes.size() > 2 && !meshes[2]->surfaces.empty()) {
 				auto const &surface = meshes[2]->surfaces[0];
-				gl.draw_mesh(meshes[2]->mesh_buffers, view_projection,
+				gl.draw_mesh(meshes[2]->mesh_buffers,
+				    view_projection
+				        * smath::translate(smath::Vec3 { 0.0f, 0.0f, -10.0f }),
 				    surface.count, surface.start_index);
 			}
 
@@ -386,6 +667,8 @@ auto Application::run() -> void
 			gl.draw_rectangle({ -0.5f, 0.5f }, { 0.5f, 0.5f });
 			gl.draw_rectangle(
 			    { 0, 0.5f }, { 0.5f, 0.5f }, { Colors::TEAL, 1.0f });
+
+			gl.draw_sphere(m_camera.target, 0.01f);
 		});
 	}
 }
@@ -474,13 +757,28 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 	}
 
 	if (pressed && key == KEY_F11 && m_ctrl_pressed_count > 0) {
-		mouse_captured(!mouse_captured());
-		m_show_imgui = !mouse_captured();
+		bool const new_show_imgui { !m_show_imgui };
+		m_show_imgui = new_show_imgui;
+		mouse_captured(!new_show_imgui);
 	}
 
 	if (auto imgui_key { linux_key_to_imgui(key) }) {
-		ImGui::GetIO().AddKeyEvent(*imgui_key, pressed);
+		if (m_show_imgui)
+			ImGui::GetIO().AddKeyEvent(*imgui_key, pressed);
 	}
+
+	if (m_show_imgui && pressed) {
+		bool const shift_pressed { is_key_pressed(KEY_LEFTSHIFT)
+			|| is_key_pressed(KEY_RIGHTSHIFT)
+			|| (key == KEY_LEFTSHIFT && pressed)
+			|| (key == KEY_RIGHTSHIFT && pressed) };
+
+		if (auto ch { linux_key_to_char(key, shift_pressed) })
+			ImGui::GetIO().AddInputCharacter(*ch);
+	}
+
+	if (key < m_key_state.size())
+		m_key_state[key] = pressed;
 }
 
 auto Application::clamp_mouse_to_window(int width, int height) -> void
@@ -502,7 +800,14 @@ auto Application::mouse_captured(bool new_state) -> void
 		return;
 	}
 
-	m_mouse_captured = new_state;
+	m_mouse_captured = new_state && !m_show_imgui;
+}
+
+auto Application::is_key_pressed(uint32_t key) const -> bool
+{
+	if (key >= m_key_state.size())
+		return false;
+	return m_key_state[key];
 }
 
 } // namespace Lunar

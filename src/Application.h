@@ -1,12 +1,14 @@
 #pragma once
 
+#include <array>
 #include <memory>
 
 #include <SDL3/SDL_video.h>
+#include <imgui.h>
+#include <linux/input-event-codes.h>
 
 #include "Logger.h"
-
-#include <imgui.h>
+#include "Types.h"
 
 struct libinput;
 struct libinput_event_keyboard;
@@ -26,6 +28,7 @@ struct Application {
 	auto mouse_captured(bool new_state) -> void;
 	auto mouse_captured() const -> bool { return m_mouse_captured; }
 	auto toggle_mouse_captured() -> void { mouse_captured(!m_mouse_captured); }
+	auto is_key_pressed(uint32_t key) const -> bool;
 
 private:
 	auto init_input() -> void;
@@ -48,6 +51,13 @@ private:
 
 	double m_mouse_x { 0.0 };
 	double m_mouse_y { 0.0 };
+	double m_mouse_dx { 0.0 };
+	double m_mouse_dy { 0.0 };
+
+	std::array<bool, KEY_MAX + 1> m_key_state {};
+
+	Camera m_camera;
+	PolarCoordinate m_cursor;
 };
 
 } // namespace Lunar

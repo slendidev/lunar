@@ -76,6 +76,9 @@ struct VulkanRenderer {
 		auto draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
 		    smath::Vec4 color = smath::Vec4 { Colors::WHITE, 1.0f },
 		    float rotation = 0.0f) -> void;
+		auto draw_sphere(smath::Vec3 center, float radius, int rings = 16,
+		    int segments = 32, std::optional<smath::Vec4> sphere_color = {})
+		    -> void;
 		auto end() -> void;
 		auto flush() -> void;
 
