@@ -73,6 +73,7 @@ struct VulkanRenderer {
 		auto normal(smath::Vec3 const &normal) -> void;
 		auto set_texture(std::optional<AllocatedImage const *> texture
 		    = std::nullopt) -> void;
+		auto set_culling(bool enabled) -> void;
 		auto draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
 		    smath::Vec4 color = smath::Vec4 { Colors::WHITE, 1.0f },
 		    float rotation = 0.0f) -> void;
@@ -84,6 +85,8 @@ struct VulkanRenderer {
 
 		auto use_pipeline(Pipeline &pipeline) -> void;
 		auto set_transform(smath::Mat4 const &transform) -> void;
+		auto push_transform() -> void;
+		auto pop_transform() -> void;
 		auto draw_mesh(GPUMeshBuffers const &mesh, smath::Mat4 const &transform,
 		    uint32_t index_count, uint32_t first_index = 0,
 		    int32_t vertex_offset = 0) -> void;
@@ -101,7 +104,9 @@ struct VulkanRenderer {
 		bool m_inside_primitive { false };
 		bool m_drawing { false };
 		Pipeline *m_active_pipeline { nullptr };
+		bool m_culling_enabled { true };
 		smath::Mat4 m_transform { smath::Mat4::identity() };
+		std::vector<smath::Mat4> m_transform_stack;
 		smath::Vec4 m_current_color { 1.0f, 1.0f, 1.0f, 1.0f };
 		smath::Vec3 m_current_normal { 0.0f, 0.0f, 1.0f };
 		smath::Vec2 m_current_uv { 0.0f, 0.0f };
@@ -256,7 +261,9 @@ private:
 		vk::DescriptorSetLayout single_image_descriptor_layout {};
 
 		Pipeline triangle_pipeline;
+		Pipeline triangle_pipeline_culled;
 		Pipeline mesh_pipeline;
+		Pipeline mesh_pipeline_culled;
 
 		GPUMeshBuffers rectangle;
 

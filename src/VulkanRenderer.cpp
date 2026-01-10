@@ -46,7 +46,10 @@ auto VulkanRenderer::GL::begin_drawing(vk::CommandBuffer cmd,
 	m_indices.clear();
 	m_inside_primitive = false;
 	m_drawing = true;
-	m_active_pipeline = &m_renderer.m_vk.mesh_pipeline;
+	m_transform_stack.clear();
+	m_active_pipeline = m_culling_enabled
+	    ? &m_renderer.m_vk.mesh_pipeline_culled
+	    : &m_renderer.m_vk.mesh_pipeline;
 	m_transform = smath::Mat4::identity();
 	m_current_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 	m_current_normal = { 0.0f, 0.0f, 1.0f };
@@ -164,6 +167,34 @@ auto VulkanRenderer::GL::set_texture(
 	m_bound_texture = texture.value_or(&m_renderer.m_vk.error_image);
 }
 
+auto VulkanRenderer::GL::set_culling(bool enabled) -> void
+{
+	if (m_culling_enabled == enabled) {
+		return;
+	}
+
+	if (m_drawing) {
+		flush();
+	}
+
+	m_culling_enabled = enabled;
+	if (!m_drawing) {
+		return;
+	}
+
+	if (m_active_pipeline == &m_renderer.m_vk.mesh_pipeline
+	    || m_active_pipeline == &m_renderer.m_vk.mesh_pipeline_culled) {
+		m_active_pipeline = enabled ? &m_renderer.m_vk.mesh_pipeline_culled
+		                            : &m_renderer.m_vk.mesh_pipeline;
+	} else if (m_active_pipeline == &m_renderer.m_vk.triangle_pipeline
+	    || m_active_pipeline == &m_renderer.m_vk.triangle_pipeline_culled) {
+		m_active_pipeline = enabled ? &m_renderer.m_vk.triangle_pipeline_culled
+		                            : &m_renderer.m_vk.triangle_pipeline;
+	}
+
+	bind_pipeline_if_needed();
+}
+
 auto VulkanRenderer::GL::end() -> void
 {
 	if (!m_inside_primitive)
@@ -235,7 +266,8 @@ auto VulkanRenderer::GL::flush() -> void
 
 	bind_pipeline_if_needed();
 
-	if (m_active_pipeline == &m_renderer.m_vk.mesh_pipeline) {
+	if (m_active_pipeline == &m_renderer.m_vk.mesh_pipeline
+	    || m_active_pipeline == &m_renderer.m_vk.mesh_pipeline_culled) {
 		auto const image_set {
 			m_renderer.m_vk.get_current_frame().frame_descriptors.allocate(
 			    m_renderer.m_logger, m_renderer.m_vkb.dev.device,
@@ -254,7 +286,7 @@ auto VulkanRenderer::GL::flush() -> void
 
 		auto vk_image_set = vk::DescriptorSet { image_set };
 		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-		    m_renderer.m_vk.mesh_pipeline.get_layout(), 0, vk_image_set, {});
+		    m_active_pipeline->get_layout(), 0, vk_image_set, {});
 
 		GPUDrawPushConstants push_constants {};
 		push_constants.world_matrix = m_transform;
@@ -264,7 +296,7 @@ auto VulkanRenderer::GL::flush() -> void
 		push_constants.vertex_buffer
 		    = m_renderer.m_device.getBufferAddress(device_address_info);
 
-		cmd.pushConstants(m_renderer.m_vk.mesh_pipeline.get_layout(),
+		cmd.pushConstants(m_active_pipeline->get_layout(),
 		    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
 		    &push_constants);
 	}
@@ -283,13 +315,26 @@ auto VulkanRenderer::GL::flush() -> void
 
 auto VulkanRenderer::GL::use_pipeline(Pipeline &pipeline) -> void
 {
-	if (&pipeline == m_active_pipeline) {
+	Pipeline *resolved_pipeline = &pipeline;
+	if (&pipeline == &m_renderer.m_vk.mesh_pipeline
+	    || &pipeline == &m_renderer.m_vk.mesh_pipeline_culled) {
+		resolved_pipeline = m_culling_enabled
+		    ? &m_renderer.m_vk.mesh_pipeline_culled
+		    : &m_renderer.m_vk.mesh_pipeline;
+	} else if (&pipeline == &m_renderer.m_vk.triangle_pipeline
+	    || &pipeline == &m_renderer.m_vk.triangle_pipeline_culled) {
+		resolved_pipeline = m_culling_enabled
+		    ? &m_renderer.m_vk.triangle_pipeline_culled
+		    : &m_renderer.m_vk.triangle_pipeline;
+	}
+
+	if (resolved_pipeline == m_active_pipeline) {
 		return;
 	}
 
 	flush();
 
-	m_active_pipeline = &pipeline;
+	m_active_pipeline = resolved_pipeline;
 	bind_pipeline_if_needed();
 }
 
@@ -297,6 +342,22 @@ auto VulkanRenderer::GL::set_transform(smath::Mat4 const &transform) -> void
 {
 	flush();
 	m_transform = transform;
+}
+
+auto VulkanRenderer::GL::push_transform() -> void
+{
+	m_transform_stack.push_back(m_transform);
+}
+
+auto VulkanRenderer::GL::pop_transform() -> void
+{
+	if (m_transform_stack.empty()) {
+		return;
+	}
+
+	flush();
+	m_transform = m_transform_stack.back();
+	m_transform_stack.pop_back();
 }
 
 auto VulkanRenderer::GL::draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
@@ -415,7 +476,10 @@ auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
 	assert(m_drawing && "begin_drawing must be called first");
 
 	flush();
-	use_pipeline(m_renderer.m_vk.mesh_pipeline);
+	Pipeline &mesh_pipeline = m_culling_enabled
+	    ? m_renderer.m_vk.mesh_pipeline_culled
+	    : m_renderer.m_vk.mesh_pipeline;
+	use_pipeline(mesh_pipeline);
 
 	auto const image_set {
 		m_renderer.m_vk.get_current_frame().frame_descriptors.allocate(
@@ -433,13 +497,13 @@ auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
 
 	auto vk_image_set = vk::DescriptorSet { image_set };
 	m_cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-	    m_renderer.m_vk.mesh_pipeline.get_layout(), 0, vk_image_set, {});
+	    mesh_pipeline.get_layout(), 0, vk_image_set, {});
 
 	GPUDrawPushConstants push_constants {};
 	push_constants.world_matrix = transform;
 	push_constants.vertex_buffer = mesh.vertex_buffer_address;
 
-	m_cmd.pushConstants(m_renderer.m_vk.mesh_pipeline.get_layout(),
+	m_cmd.pushConstants(mesh_pipeline.get_layout(),
 	    vk::ShaderStageFlagBits::eVertex, 0, sizeof(push_constants),
 	    &push_constants);
 
@@ -563,7 +627,9 @@ VulkanRenderer::~VulkanRenderer()
 	m_vk.imm_command_pool.reset();
 	m_vk.imm_fence.reset();
 	m_vk.triangle_pipeline.reset();
+	m_vk.triangle_pipeline_culled.reset();
 	m_vk.mesh_pipeline.reset();
+	m_vk.mesh_pipeline_culled.reset();
 	m_vk.default_sampler_linear.reset();
 	m_vk.default_sampler_nearest.reset();
 
@@ -1030,6 +1096,25 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 		          .set_depth_format(
 		              static_cast<VkFormat>(m_vk.depth_image.format));
 	      });
+	m_vk.triangle_pipeline_culled
+	    = builder.build_graphics([&](GraphicsPipelineBuilder &pipeline_builder)
+	                                 -> GraphicsPipelineBuilder & {
+		      return pipeline_builder
+		          .set_shaders(
+		              triangle_vert_shader.get(), triangle_frag_shader.get())
+		          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		          .set_polygon_mode(VK_POLYGON_MODE_FILL)
+		          .set_cull_mode(
+		              VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		          .set_multisampling(
+		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
+		          .enable_blending_additive()
+		          .disable_depth_testing()
+		          .set_color_attachment_format(
+		              static_cast<VkFormat>(m_vk.draw_image.format))
+		          .set_depth_format(
+		              static_cast<VkFormat>(m_vk.depth_image.format));
+	      });
 }
 
 auto VulkanRenderer::mesh_pipeline_init() -> void
@@ -1077,6 +1162,25 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 		          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 		          .set_polygon_mode(VK_POLYGON_MODE_FILL)
 		          .set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
+		          .set_multisampling(
+		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
+		          .disable_blending()
+		          .enable_depth_testing()
+		          .set_color_attachment_format(
+		              static_cast<VkFormat>(m_vk.draw_image.format))
+		          .set_depth_format(
+		              static_cast<VkFormat>(m_vk.depth_image.format));
+	      });
+	m_vk.mesh_pipeline_culled
+	    = builder.build_graphics([&](GraphicsPipelineBuilder &pipeline_builder)
+	                                 -> GraphicsPipelineBuilder & {
+		      return pipeline_builder
+		          .set_shaders(
+		              triangle_vert_shader.get(), triangle_frag_shader.get())
+		          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		          .set_polygon_mode(VK_POLYGON_MODE_FILL)
+		          .set_cull_mode(
+		              VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
 		          .set_multisampling(
 		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
 		          .disable_blending()

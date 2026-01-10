@@ -551,10 +551,9 @@ auto Application::run() -> void
 		ImGui::SetNextWindowSize({ 300, 100 });
 		ImGui::SetNextWindowPos({ 0, 0 });
 		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
-		if (ImGui::Begin("Debug Info", nullptr,
-		        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
-			defer(ImGui::End());
-
+		bool debug_open { ImGui::Begin("Debug Info", nullptr,
+			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize) };
+		if (debug_open) {
 			ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
 			ImGui::Text("%s",
 			    std::format("Cam pos: ({:.2f}, {:.2f}, {:.2f})",
@@ -575,6 +574,7 @@ auto Application::run() -> void
 			        m_cursor.r, m_cursor.theta, m_cursor.phi)
 			        .c_str());
 		}
+		ImGui::End();
 		ImGui::PopStyleColor();
 
 		if (m_show_imgui) {
@@ -582,9 +582,8 @@ auto Application::run() -> void
 			ImGui::ShowDemoWindow();
 
 			ImGui::SetNextWindowSize({ 300, -1 }, ImGuiCond_Once);
-			if (ImGui::Begin("Fun menu")) {
-				defer(ImGui::End());
-
+			bool fun_menu_open { ImGui::Begin("Fun menu") };
+			if (fun_menu_open) {
 				static std::array<char const *, 4> const aa_items {
 					"None",
 					"MSAA 2X",
@@ -605,13 +604,60 @@ auto Application::run() -> void
 				        ImGuiTreeNodeFlags_Framed
 				            | ImGuiTreeNodeFlags_SpanAvailWidth
 				            | ImGuiTreeNodeFlags_DefaultOpen)) {
+					auto const camera_offset { m_camera.target
+						- m_camera.position };
+					auto const camera_distance { camera_offset.magnitude() };
+					auto const camera_direction {
+						camera_offset.normalized_safe()
+					};
+
 					ImGui::SliderFloat("Mouse sensitivity",
 					    &m_mouse_sensitivity, 0.0001f, 0.01f, "%.4f");
-					ImGui::DragFloat4("Pos", m_camera.position.data());
-					ImGui::DragFloat4("Target", m_camera.target.data());
-					ImGui::DragFloat4("Up", m_camera.up.data());
+					constexpr float position_step { 0.05f };
+					constexpr float target_step { 0.05f };
+					bool position_changed { ImGui::DragFloat3(
+						"Pos", m_camera.position.data(), position_step) };
+					bool target_changed { ImGui::DragFloat3(
+						"Target", m_camera.target.data(), target_step) };
+					ImGui::DragFloat3("Up", m_camera.up.data());
+
+					if (position_changed && !target_changed) {
+						auto offset { m_cursor.to_vec3() };
+						auto const preserve_distance { camera_distance > 0.0f
+							    ? camera_distance
+							    : offset.magnitude() };
+
+						if (offset.magnitude() == 0.0f
+						    && camera_direction.magnitude() > 0.0f) {
+							offset = camera_direction * preserve_distance;
+						}
+
+						if (offset.magnitude() > 0.0f) {
+							m_camera.target = m_camera.position + offset;
+						}
+					}
+
+					if (target_changed && !position_changed) {
+						auto const new_offset { m_camera.target
+							- m_camera.position };
+						auto new_direction { new_offset.normalized_safe() };
+						auto const preserve_distance { camera_distance > 0.0f
+							    ? camera_distance
+							    : new_offset.magnitude() };
+
+						if (new_direction.magnitude() == 0.0f) {
+							new_direction = camera_direction;
+						}
+
+						if (new_direction.magnitude() > 0.0f
+						    && preserve_distance > 0.0f) {
+							m_camera.position = m_camera.target
+							    - new_direction * preserve_distance;
+						}
+					}
 				}
 			}
+			ImGui::End();
 		}
 
 		ImGui::Render();
@@ -632,11 +678,6 @@ auto Application::run() -> void
 			projection[1][1] *= -1;
 			auto view_projection { projection * view };
 
-			// auto rect_model { smath::scale(
-			//	smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
-			//	smath::Vec3 { 5.0f, 5.0f, 1.0f }) };
-
-			// gl.set_transform(view_projection * rect_model);
 			gl.set_transform(view_projection);
 
 			gl.set_texture();
@@ -645,9 +686,16 @@ auto Application::run() -> void
 				auto const &surface = meshes[2]->surfaces[0];
 				gl.draw_mesh(meshes[2]->mesh_buffers,
 				    view_projection
-				        * smath::translate(smath::Vec3 { 0.0f, 0.0f, -10.0f }),
+				        * smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
 				    surface.count, surface.start_index);
 			}
+
+			gl.push_transform();
+			gl.set_transform(view_projection
+			    * smath::translate(smath::Vec3 { 0.0f, 0.0f, 5.0f })
+			    * smath::Quaternion<float>::from_axis_angle(
+			        smath::Vec3 { 0.0f, 1.0f, 0.0f }, smath::deg(180))
+			        .as_matrix());
 
 			gl.set_texture(&m_renderer->white_texture());
 
