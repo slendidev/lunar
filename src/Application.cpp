@@ -436,6 +436,7 @@ Application::Application()
 Application::~Application()
 {
 	if (m_renderer) {
+		m_renderer->device().waitIdle();
 		for (auto const &mesh : m_test_meshes) {
 			m_renderer->destroy_buffer(mesh->mesh_buffers.index_buffer);
 			m_renderer->destroy_buffer(mesh->mesh_buffers.vertex_buffer);
@@ -496,9 +497,24 @@ auto Application::init_skybox_pipeline() -> void
 	};
 	builder.set_descriptor_set_layouts(descriptor_set_layouts);
 
+	VkVertexInputBindingDescription binding {};
+	binding.binding = 0;
+	binding.stride = sizeof(smath::Vec3);
+	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription attribute {};
+	attribute.location = 0;
+	attribute.binding = 0;
+	attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
+	attribute.offset = 0;
+
+	std::array bindings { binding };
+	std::array attributes { attribute };
+
 	m_skybox_pipeline = builder.build_graphics(
 	    [&](GraphicsPipelineBuilder &pipeline_builder)
 	        -> GraphicsPipelineBuilder & {
+		    pipeline_builder.set_vertex_input(bindings, attributes);
 		    return pipeline_builder
 		        .set_shaders(skybox_vert_shader.get(), skybox_frag_shader.get())
 		        .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
@@ -522,9 +538,7 @@ auto Application::binary_directory() const -> std::filesystem::path
 	if (!base_path) {
 		return std::filesystem::current_path();
 	}
-	std::filesystem::path base_dir { base_path };
-	SDL_free(const_cast<char *>(base_path));
-	return base_dir;
+	return std::filesystem::path { base_path };
 }
 
 auto Application::asset_directory() -> std::filesystem::path

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -35,6 +36,10 @@ struct GraphicsPipelineBuilder {
 	auto set_depth_format(VkFormat format) -> GraphicsPipelineBuilder &;
 	auto set_pipeline_layout(VkPipelineLayout layout)
 	    -> GraphicsPipelineBuilder &;
+	auto set_vertex_input(
+	    std::span<VkVertexInputBindingDescription const> bindings,
+	    std::span<VkVertexInputAttributeDescription const> attributes)
+	    -> GraphicsPipelineBuilder &;
 	auto disable_depth_testing() -> GraphicsPipelineBuilder &;
 	auto enable_depth_testing(bool depth_write_enable = true,
 	    VkCompareOp op = VK_COMPARE_OP_LESS_OR_EQUAL)
@@ -52,6 +57,8 @@ private:
 	VkFormat m_color_attachment_format {};
 
 	std::vector<VkPipelineShaderStageCreateInfo> m_shader_stages {};
+	std::vector<VkVertexInputBindingDescription> m_vertex_bindings {};
+	std::vector<VkVertexInputAttributeDescription> m_vertex_attributes {};
 
 	Logger &m_logger;
 };

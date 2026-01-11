@@ -32,6 +32,8 @@ auto GraphicsPipelineBuilder::clear() -> GraphicsPipelineBuilder &
 	m_render_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 
 	m_shader_stages.clear();
+	m_vertex_bindings.clear();
+	m_vertex_attributes.clear();
 
 	return *this;
 }
@@ -168,6 +170,17 @@ auto GraphicsPipelineBuilder::set_pipeline_layout(VkPipelineLayout layout)
 	return *this;
 }
 
+auto GraphicsPipelineBuilder::set_vertex_input(
+    std::span<VkVertexInputBindingDescription const> bindings,
+    std::span<VkVertexInputAttributeDescription const> attributes)
+    -> GraphicsPipelineBuilder &
+{
+	m_vertex_bindings.assign(bindings.begin(), bindings.end());
+	m_vertex_attributes.assign(attributes.begin(), attributes.end());
+
+	return *this;
+}
+
 auto GraphicsPipelineBuilder::disable_depth_testing()
     -> GraphicsPipelineBuilder &
 {
@@ -223,6 +236,12 @@ auto GraphicsPipelineBuilder::build(VkDevice dev) -> VkPipeline
 	VkPipelineVertexInputStateCreateInfo vertex_input_ci {};
 	vertex_input_ci.sType
 	    = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertex_input_ci.vertexBindingDescriptionCount
+	    = static_cast<uint32_t>(m_vertex_bindings.size());
+	vertex_input_ci.pVertexBindingDescriptions = m_vertex_bindings.data();
+	vertex_input_ci.vertexAttributeDescriptionCount
+	    = static_cast<uint32_t>(m_vertex_attributes.size());
+	vertex_input_ci.pVertexAttributeDescriptions = m_vertex_attributes.data();
 
 	VkGraphicsPipelineCreateInfo pipeline_ci {};
 	pipeline_ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
