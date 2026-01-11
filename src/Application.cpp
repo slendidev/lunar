@@ -1075,4 +1075,10 @@ auto Application::is_key_released(uint32_t key) const -> bool
 	return !m_key_state[key] && m_key_state_previous[key];
 }
 
+auto Application::the() -> Application &
+{
+	static Application self {};
+	return self;
+}
+
 } // namespace Lunar

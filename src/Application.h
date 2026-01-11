@@ -38,6 +38,8 @@ struct Application {
 	auto is_key_pressed(uint32_t key) const -> bool;
 	auto is_key_released(uint32_t key) const -> bool;
 
+	static auto the() -> Application &;
+
 private:
 	auto init_input() -> void;
 	auto init_test_meshes() -> void;

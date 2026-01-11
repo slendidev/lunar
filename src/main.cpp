@@ -1,7 +1,3 @@
 #include "src/Application.h"
 
-auto main() -> int
-{
-	Lunar::Application app {};
-	app.run();
-}
+auto main() -> int { Lunar::Application::the().run(); }
