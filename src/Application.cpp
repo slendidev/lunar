@@ -51,7 +51,6 @@
 
 #include <smath.hpp>
 
-#include "GraphicsPipelineBuilder.h"
 #include "Util.h"
 #include "VulkanRenderer.h"
 
@@ -419,7 +418,10 @@ Application::Application()
 	}
 
 	m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
-	init_skybox_pipeline();
+	m_renderer->set_antialiasing_immediate(
+	    VulkanRenderer::AntiAliasingKind::MSAA_4X);
+
+	m_skybox.init(*m_renderer, asset_directory() / "cubemap.png");
 	init_test_meshes();
 
 	init_input();
@@ -428,8 +430,6 @@ Application::Application()
 
 	m_logger.info("App init done!");
 
-	m_renderer->set_antialiasing(VulkanRenderer::AntiAliasingKind::MSAA_4X);
-
 	m_cursor = PolarCoordinate::from_vec3(m_camera.target - m_camera.position);
 }
 
@@ -437,6 +437,7 @@ Application::~Application()
 {
 	if (m_renderer) {
 		m_renderer->device().waitIdle();
+		m_skybox.destroy(*m_renderer);
 		for (auto const &mesh : m_test_meshes) {
 			m_renderer->destroy_buffer(mesh->mesh_buffers.index_buffer);
 			m_renderer->destroy_buffer(mesh->mesh_buffers.vertex_buffer);
@@ -444,7 +445,6 @@ Application::~Application()
 	}
 	m_test_meshes.clear();
 
-	m_skybox_pipeline.reset();
 	m_renderer.reset();
 
 	shutdown_input();
@@ -453,83 +453,6 @@ Application::~Application()
 	SDL_Quit();
 
 	m_logger.info("App destroy done!");
-}
-
-auto Application::init_skybox_pipeline() -> void
-{
-	struct SkyboxPushConstants {
-		smath::Mat4 mvp;
-	};
-
-	Pipeline::Builder builder { m_renderer->device(), m_logger };
-
-	uint8_t skybox_vert_shader_data[] {
-#embed "skybox_vert.spv"
-	};
-	auto skybox_vert_shader
-	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_vert_shader_data,
-	                                     sizeof(skybox_vert_shader_data)),
-	        m_renderer->device());
-	if (!skybox_vert_shader) {
-		m_logger.err("Failed to load skybox vert shader");
-	}
-
-	uint8_t skybox_frag_shader_data[] {
-#embed "skybox_frag.spv"
-	};
-	auto skybox_frag_shader
-	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_frag_shader_data,
-	                                     sizeof(skybox_frag_shader_data)),
-	        m_renderer->device());
-	if (!skybox_frag_shader) {
-		m_logger.err("Failed to load skybox frag shader");
-	}
-
-	vk::PushConstantRange push_constant_range {};
-	push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
-	push_constant_range.offset = 0;
-	push_constant_range.size = sizeof(SkyboxPushConstants);
-
-	std::array push_constant_ranges { push_constant_range };
-	builder.set_push_constant_ranges(push_constant_ranges);
-	std::array descriptor_set_layouts {
-		m_renderer->single_image_descriptor_layout(),
-	};
-	builder.set_descriptor_set_layouts(descriptor_set_layouts);
-
-	VkVertexInputBindingDescription binding {};
-	binding.binding = 0;
-	binding.stride = sizeof(smath::Vec3);
-	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-	VkVertexInputAttributeDescription attribute {};
-	attribute.location = 0;
-	attribute.binding = 0;
-	attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
-	attribute.offset = 0;
-
-	std::array bindings { binding };
-	std::array attributes { attribute };
-
-	m_skybox_pipeline = builder.build_graphics(
-	    [&](GraphicsPipelineBuilder &pipeline_builder)
-	        -> GraphicsPipelineBuilder & {
-		    pipeline_builder.set_vertex_input(bindings, attributes);
-		    return pipeline_builder
-		        .set_shaders(skybox_vert_shader.get(), skybox_frag_shader.get())
-		        .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-		        .set_polygon_mode(VK_POLYGON_MODE_FILL)
-		        .set_cull_mode(
-		            VK_CULL_MODE_FRONT_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
-		        .set_multisampling(static_cast<VkSampleCountFlagBits>(
-		            m_renderer->msaa_samples()))
-		        .disable_blending()
-		        .enable_depth_testing(false, VK_COMPARE_OP_LESS_OR_EQUAL)
-		        .set_color_attachment_format(
-		            static_cast<VkFormat>(m_renderer->draw_image_format()))
-		        .set_depth_format(
-		            static_cast<VkFormat>(m_renderer->depth_image_format()));
-	    });
 }
 
 auto Application::binary_directory() const -> std::filesystem::path
@@ -871,6 +794,12 @@ auto Application::run() -> void
 				m_camera.fovy, aspect, 0.1f, 10000.0f) };
 			projection[1][1] *= -1;
 			auto view_projection { projection * view };
+
+			auto skybox_view = view;
+			skybox_view[3][0] = 0.0f;
+			skybox_view[3][1] = 0.0f;
+			skybox_view[3][2] = 0.0f;
+			m_skybox.draw(gl, projection * skybox_view);
 
 			gl.set_transform(view_projection);
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -92,6 +93,10 @@ struct VulkanRenderer {
 		auto draw_mesh(GPUMeshBuffers const &mesh, smath::Mat4 const &transform,
 		    uint32_t index_count, uint32_t first_index = 0,
 		    int32_t vertex_offset = 0) -> void;
+		auto draw_indexed(Pipeline &pipeline, vk::DescriptorSet descriptor_set,
+		    AllocatedBuffer const &vertex_buffer,
+		    AllocatedBuffer const &index_buffer, uint32_t index_count,
+		    std::span<std::byte const> push_constants) -> void;
 
 	private:
 		auto push_vertex(smath::Vec3 const &pos) -> void;
@@ -131,6 +136,7 @@ struct VulkanRenderer {
 	auto render(std::function<void(GL &)> const &record = {}) -> void;
 	auto resize(uint32_t width, uint32_t height) -> void;
 	auto set_antialiasing(AntiAliasingKind kind) -> void;
+	auto set_antialiasing_immediate(AntiAliasingKind kind) -> void;
 	auto antialiasing() const -> AntiAliasingKind
 	{
 		return m_vk.antialiasing_kind;
@@ -144,6 +150,9 @@ struct VulkanRenderer {
 	auto destroy_buffer(AllocatedBuffer const &buffer) -> void;
 	auto create_image(CPUTexture const &texture, vk::ImageUsageFlags flags,
 	    bool mipmapped = false) -> AllocatedImage;
+	auto create_cubemap(std::span<uint8_t const> pixels, uint32_t face_size,
+	    vk::Format format, vk::ImageUsageFlags flags) -> AllocatedImage;
+	auto destroy_image(AllocatedImage const &img) -> void;
 	auto rectangle_mesh() const -> GPUMeshBuffers const &
 	{
 		return m_vk.rectangle;
@@ -262,7 +271,6 @@ private:
 	    bool mipmapped = false) -> AllocatedImage;
 	auto create_image(void const *data, vk::Extent3D size, vk::Format format,
 	    vk::ImageUsageFlags flags, bool mipmapped = false) -> AllocatedImage;
-	auto destroy_image(AllocatedImage const &img) -> void;
 
 	auto create_buffer(size_t alloc_size, vk::BufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;

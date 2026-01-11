@@ -11,7 +11,7 @@
 
 #include "Loader.h"
 #include "Logger.h"
-#include "Pipeline.h"
+#include "Skybox.h"
 #include "Types.h"
 
 struct libinput;
@@ -37,7 +37,6 @@ struct Application {
 
 private:
 	auto init_input() -> void;
-	auto init_skybox_pipeline() -> void;
 	auto init_test_meshes() -> void;
 	auto asset_directory() -> std::filesystem::path;
 	auto shutdown_input() -> void;
@@ -48,7 +47,7 @@ private:
 	SDL_Window *m_window { nullptr };
 	Logger m_logger { "Lunar" };
 	std::unique_ptr<VulkanRenderer> m_renderer;
-	Pipeline m_skybox_pipeline;
+	Skybox m_skybox;
 	std::vector<std::shared_ptr<Mesh>> m_test_meshes;
 
 	udev *m_udev { nullptr };

@@ -517,6 +517,36 @@ auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
 	m_cmd.drawIndexed(index_count, 1, first_index, vertex_offset, 0);
 }
 
+auto VulkanRenderer::GL::draw_indexed(Pipeline &pipeline,
+    vk::DescriptorSet descriptor_set, AllocatedBuffer const &vertex_buffer,
+    AllocatedBuffer const &index_buffer, uint32_t index_count,
+    std::span<std::byte const> push_constants) -> void
+{
+	assert(m_drawing && "begin_drawing must be called first");
+
+	if (m_inside_primitive) {
+		end();
+	}
+	flush();
+	use_pipeline(pipeline);
+
+	auto cmd { m_cmd };
+	cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+	    pipeline.get_layout(), 0, descriptor_set, {});
+
+	if (!push_constants.empty()) {
+		cmd.pushConstants(pipeline.get_layout(),
+		    vk::ShaderStageFlagBits::eVertex, 0,
+		    static_cast<uint32_t>(push_constants.size()),
+		    push_constants.data());
+	}
+
+	vk::DeviceSize offset = 0;
+	cmd.bindVertexBuffers(0, vertex_buffer.buffer, offset);
+	cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
+	cmd.drawIndexed(index_count, 1, 0, 0, 0);
+}
+
 auto VulkanRenderer::GL::push_vertex(smath::Vec3 const &pos) -> void
 {
 	assert(m_drawing && "begin_drawing must be called first");
@@ -676,6 +706,11 @@ auto VulkanRenderer::set_antialiasing(AntiAliasingKind kind) -> void
 	enqueue_render_command(RenderCommand {
 	    RenderCommand::SetAntiAliasing { kind },
 	});
+}
+
+auto VulkanRenderer::set_antialiasing_immediate(AntiAliasingKind kind) -> void
+{
+	apply_antialiasing(kind);
 }
 
 auto VulkanRenderer::apply_antialiasing(AntiAliasingKind kind) -> void
@@ -2160,6 +2195,128 @@ auto VulkanRenderer::create_image(CPUTexture const &texture,
 	vk::Extent3D size { texture.width, texture.height, 1 };
 	return create_image(
 	    texture.pixels.data(), size, texture.format, flags, mipmapped);
+}
+
+auto VulkanRenderer::create_cubemap(std::span<uint8_t const> pixels,
+    uint32_t face_size, vk::Format format, vk::ImageUsageFlags flags)
+    -> AllocatedImage
+{
+	size_t const face_bytes = static_cast<size_t>(face_size) * face_size * 4;
+	if (pixels.size() < face_bytes * 6) {
+		m_logger.err("Cubemap data size is invalid");
+		return {};
+	}
+
+	auto const upload_buffer {
+		create_buffer(pixels.size(), vk::BufferUsageFlagBits::eTransferSrc,
+		    VMA_MEMORY_USAGE_CPU_TO_GPU),
+	};
+
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(m_vk.allocator, upload_buffer.allocation, &info);
+
+	void *mapped_data { reinterpret_cast<GPUSceneData *>(info.pMappedData) };
+	bool mapped_here { false };
+	if (!mapped_data) {
+		VkResult res = vmaMapMemory(
+		    m_vk.allocator, upload_buffer.allocation, (void **)&mapped_data);
+		assert(res == VK_SUCCESS);
+		mapped_here = true;
+	}
+
+	memcpy(mapped_data, pixels.data(), pixels.size());
+
+	AllocatedImage new_image {};
+	new_image.format = format;
+	new_image.extent = vk::Extent3D { face_size, face_size, 1 };
+
+	auto img_ci { vkinit::image_create_info(format,
+		flags | vk::ImageUsageFlagBits::eTransferDst, new_image.extent,
+		vk::SampleCountFlagBits::e1) };
+	img_ci.arrayLayers = 6;
+	img_ci.flags = vk::ImageCreateFlagBits::eCubeCompatible;
+
+	VmaAllocationCreateInfo alloc_ci {};
+	alloc_ci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	alloc_ci.requiredFlags
+	    = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+	VK_CHECK(m_logger,
+	    vmaCreateImage(m_vk.allocator,
+	        reinterpret_cast<VkImageCreateInfo const *>(&img_ci), &alloc_ci,
+	        reinterpret_cast<VkImage *>(&new_image.image),
+	        &new_image.allocation, nullptr));
+
+	vk::ImageViewCreateInfo view_ci {};
+	view_ci.viewType = vk::ImageViewType::eCube;
+	view_ci.image = new_image.image;
+	view_ci.format = format;
+	view_ci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+	view_ci.subresourceRange.baseMipLevel = 0;
+	view_ci.subresourceRange.levelCount = 1;
+	view_ci.subresourceRange.baseArrayLayer = 0;
+	view_ci.subresourceRange.layerCount = 6;
+	new_image.image_view = m_device.createImageView(view_ci);
+
+	immediate_submit([&](vk::CommandBuffer cmd) {
+		vk::ImageMemoryBarrier to_transfer {};
+		to_transfer.srcAccessMask = vk::AccessFlagBits::eNone;
+		to_transfer.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+		to_transfer.oldLayout = vk::ImageLayout::eUndefined;
+		to_transfer.newLayout = vk::ImageLayout::eTransferDstOptimal;
+		to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		to_transfer.image = new_image.image;
+		to_transfer.subresourceRange.aspectMask
+		    = vk::ImageAspectFlagBits::eColor;
+		to_transfer.subresourceRange.baseMipLevel = 0;
+		to_transfer.subresourceRange.levelCount = 1;
+		to_transfer.subresourceRange.baseArrayLayer = 0;
+		to_transfer.subresourceRange.layerCount = 6;
+
+		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+		    vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, to_transfer);
+
+		std::array<vk::BufferImageCopy, 6> regions {};
+		for (uint32_t layer = 0; layer < 6; ++layer) {
+			vk::BufferImageCopy region {};
+			region.bufferOffset = face_bytes * layer;
+			region.imageSubresource.aspectMask
+			    = vk::ImageAspectFlagBits::eColor;
+			region.imageSubresource.mipLevel = 0;
+			region.imageSubresource.baseArrayLayer = layer;
+			region.imageSubresource.layerCount = 1;
+			region.imageExtent = new_image.extent;
+			regions[layer] = region;
+		}
+
+		cmd.copyBufferToImage(upload_buffer.buffer, new_image.image,
+		    vk::ImageLayout::eTransferDstOptimal, regions);
+
+		vk::ImageMemoryBarrier to_read {};
+		to_read.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		to_read.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+		to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+		to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+		to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		to_read.image = new_image.image;
+		to_read.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+		to_read.subresourceRange.baseMipLevel = 0;
+		to_read.subresourceRange.levelCount = 1;
+		to_read.subresourceRange.baseArrayLayer = 0;
+		to_read.subresourceRange.layerCount = 6;
+
+		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		    vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, to_read);
+	});
+
+	if (mapped_here) {
+		vmaUnmapMemory(m_vk.allocator, upload_buffer.allocation);
+	}
+	destroy_buffer(upload_buffer);
+
+	return new_image;
 }
 
 auto VulkanRenderer::destroy_image(AllocatedImage const &img) -> void
