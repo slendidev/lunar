@@ -34,7 +34,7 @@
 static std::filesystem::path get_log_path(std::string_view app_name)
 {
 #ifdef _WIN32
-	PWSTR path = nullptr;
+	PWSTR path { nullptr };
 	SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path);
 	std::wstring wpath(path);
 	CoTaskMemFree(path);
@@ -70,7 +70,7 @@ static int compress_file(std::filesystem::path const &input_path,
 	std::vector<char> buffer(chunk_size);
 	while (in) {
 		in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-		std::streamsize bytes = in.gcount();
+		std::streamsize bytes { in.gcount() };
 		if (bytes > 0)
 			gzwrite(out, buffer.data(), static_cast<unsigned int>(bytes));
 	}
@@ -99,20 +99,20 @@ Logger::Logger(std::string_view app_name)
 		if (!file.is_regular_file())
 			continue;
 
-		auto name = file.path().filename().stem().string();
+		auto name { file.path().filename().stem().string() };
 		constexpr std::string_view prefix = "log_";
 
 		if (name.rfind(prefix, 0) != 0) {
 			continue;
 		}
 
-		int v = std::stoi(name.substr(prefix.size()));
+		int v { std::stoi(name.substr(prefix.size())) };
 		if (v > max)
 			max = v;
 
-		auto ext = file.path().filename().extension().string();
+		auto ext { file.path().filename().extension().string() };
 		if (ext == ".txt") {
-			auto np = file.path();
+			auto np { file.path() };
 			np.replace_extension(ext + ".gz");
 			compress_file(file.path(), np);
 		}
@@ -153,7 +153,7 @@ static std::string get_current_time_string()
 
 void Logger::log(Level level, std::string_view msg)
 {
-	auto time_str = get_current_time_string();
+	auto time_str { get_current_time_string() };
 	std::string level_str;
 	switch (level) {
 	case Logger::Level::Debug:

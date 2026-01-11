@@ -61,7 +61,7 @@ auto Mesh::load_gltf_meshes(
 {
 	renderer.logger().debug("Loading GLTF from file: {}", path);
 
-	auto data = fastgltf::GltfDataBuffer::FromPath(path);
+	auto data { fastgltf::GltfDataBuffer::FromPath(path) };
 	if (data.error() != fastgltf::Error::None) {
 		renderer.logger().err("Failed to open glTF file: {} (error {})", path,
 		    fastgltf::to_underlying(data.error()));
@@ -98,7 +98,7 @@ auto Mesh::load_gltf_meshes(
 			new_surface.count = static_cast<uint32_t>(
 			    gltf.accessors[p.indicesAccessor.value()].count);
 
-			size_t initial_vertex = vertices.size();
+			size_t initial_vertex { vertices.size() };
 
 			{ // Indices
 				auto &accessor = gltf.accessors[p.indicesAccessor.value()];
@@ -128,7 +128,7 @@ auto Mesh::load_gltf_meshes(
 
 			if (auto attr = p.findAttribute("NORMAL")) { // Normals
 				auto &accessor = gltf.accessors[attr->accessorIndex];
-				size_t local_index = 0;
+				size_t local_index { 0 };
 				for (auto normal :
 				    fastgltf::iterateAccessor<smath::Vec3>(gltf, accessor)) {
 					vertices[initial_vertex + local_index].normal = normal;
@@ -138,7 +138,7 @@ auto Mesh::load_gltf_meshes(
 
 			if (auto attr = p.findAttribute("TEXCOORD_0")) { // UVs
 				auto &accessor = gltf.accessors[attr->accessorIndex];
-				size_t local_index = 0;
+				size_t local_index { 0 };
 				for (auto uv :
 				    fastgltf::iterateAccessor<smath::Vec2>(gltf, accessor)) {
 					uv.unpack(vertices[initial_vertex + local_index].u,
@@ -149,7 +149,7 @@ auto Mesh::load_gltf_meshes(
 
 			if (auto attr = p.findAttribute("COLOR_0")) { // Colors
 				auto &accessor = gltf.accessors[attr->accessorIndex];
-				size_t local_index = 0;
+				size_t local_index { 0 };
 
 				switch (accessor.type) {
 				case fastgltf::AccessorType::Vec3: {

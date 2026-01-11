@@ -59,11 +59,11 @@ namespace Lunar {
 
 CPUTexture::CPUTexture(std::filesystem::path const &path)
 {
-	int width_out = 0;
-	int height_out = 0;
-	int channels_out = 0;
-	stbi_uc *data = stbi_load(path.string().c_str(), &width_out, &height_out,
-	    &channels_out, STBI_rgb_alpha);
+	int width_out { 0 };
+	int height_out { 0 };
+	int channels_out { 0 };
+	stbi_uc *data { stbi_load(path.string().c_str(), &width_out, &height_out,
+		&channels_out, STBI_rgb_alpha) };
 	if (!data) {
 		throw std::runtime_error(
 		    std::format("Failed to load texture: {}", path.string()));

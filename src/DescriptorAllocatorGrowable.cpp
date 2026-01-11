@@ -78,7 +78,7 @@ auto DescriptorAllocatorGrowable::destroy_pools(VkDevice dev) -> void
 auto DescriptorAllocatorGrowable::allocate(Logger &logger, VkDevice dev,
     VkDescriptorSetLayout layout, void *p_next) -> VkDescriptorSet
 {
-	auto pool_to_use = get_pool(dev);
+	auto pool_to_use { get_pool(dev) };
 
 	VkDescriptorSetAllocateInfo alloci {};
 	alloci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;

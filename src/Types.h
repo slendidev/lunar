@@ -96,7 +96,7 @@ struct PolarCoordinate {
 
 	smath::Vec3 to_vec3() const
 	{
-		float sin_phi = std::sin(phi);
+		float sin_phi { std::sin(phi) };
 
 		return smath::Vec3 { r * sin_phi * std::cos(theta), r * std::cos(phi),
 			r * sin_phi * std::sin(theta) };

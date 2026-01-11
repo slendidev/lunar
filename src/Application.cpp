@@ -418,6 +418,9 @@ Application::Application()
 	}
 
 	m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
+
+	m_window_focused
+	    = (SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 	m_renderer->set_antialiasing_immediate(
 	    VulkanRenderer::AntiAliasingKind::MSAA_4X);
 
@@ -480,13 +483,13 @@ auto Application::asset_directory() -> std::filesystem::path
 	if (auto const *xdg_data_dirs = getenv("XDG_DATA_DIRS");
 	    xdg_data_dirs && *xdg_data_dirs) {
 		std::string_view dirs_view { xdg_data_dirs };
-		size_t start = 0;
+		size_t start { 0 };
 		while (start <= dirs_view.size()) {
-			size_t end = dirs_view.find(':', start);
+			size_t end { dirs_view.find(':', start) };
 			if (end == std::string_view::npos) {
 				end = dirs_view.size();
 			}
-			auto segment = dirs_view.substr(start, end - start);
+			auto segment { dirs_view.substr(start, end - start) };
 			if (!segment.empty()) {
 				add_xdg_path(std::filesystem::path { segment });
 			}
@@ -497,7 +500,7 @@ auto Application::asset_directory() -> std::filesystem::path
 		add_xdg_path("/usr/share");
 	}
 
-	auto base_dir = binary_directory();
+	auto base_dir { binary_directory() };
 	candidates.emplace_back(base_dir / "assets");
 	candidates.emplace_back(base_dir / "../assets");
 
@@ -515,9 +518,9 @@ auto Application::asset_directory() -> std::filesystem::path
 
 auto Application::init_test_meshes() -> void
 {
-	auto assets_dir = asset_directory();
-	auto mesh_path = assets_dir / "basicmesh.glb";
-	auto meshes = Mesh::load_gltf_meshes(*m_renderer, mesh_path);
+	auto assets_dir { asset_directory() };
+	auto mesh_path { assets_dir / "basicmesh.glb" };
+	auto meshes { Mesh::load_gltf_meshes(*m_renderer, mesh_path) };
 	if (!meshes) {
 		m_logger.err("Failed to load test mesh: {}", mesh_path.string());
 		return;
@@ -548,6 +551,7 @@ auto Application::run() -> void
 
 		{
 			GZoneScopedN("Input");
+			m_key_state_previous = m_key_state;
 			process_libinput_events();
 
 			while (SDL_PollEvent(&e)) {
@@ -560,6 +564,18 @@ auto Application::run() -> void
 					m_renderer->resize(static_cast<uint32_t>(width),
 					    static_cast<uint32_t>(height));
 					clamp_mouse_to_window(width, height);
+					forward_to_imgui = true;
+				} else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+					m_window_focused = true;
+					forward_to_imgui = true;
+				} else if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+					m_window_focused = false;
+					m_ctrl_pressed_count = 0;
+					m_key_state.fill(false);
+					m_key_state_previous.fill(false);
+					m_mouse_dx = 0.0;
+
+					m_mouse_dy = 0.0;
 					forward_to_imgui = true;
 				} else if (e.type == SDL_EVENT_MOUSE_MOTION) {
 					m_mouse_x = e.motion.x;
@@ -581,6 +597,15 @@ auto Application::run() -> void
 				if (forward_to_imgui)
 					ImGui_ImplSDL3_ProcessEvent(&e);
 			}
+		}
+
+		bool const ctrl_down { is_key_down(KEY_LEFTCTRL)
+			|| is_key_down(KEY_RIGHTCTRL) };
+		{
+			bool const shift_down { is_key_down(KEY_LEFTSHIFT)
+				|| is_key_down(KEY_RIGHTSHIFT) };
+			if (ctrl_down && shift_down && is_key_pressed(KEY_Q))
+				m_running = false;
 		}
 
 		{
@@ -623,19 +648,26 @@ auto Application::run() -> void
 			if (camera_up.magnitude() == 0.0f)
 				camera_up = world_up;
 
+			auto forward_dir { smath::Vec3 {
+				look_dir.x(), 0.0f, look_dir.z() } };
+			if (forward_dir.magnitude() > 0.0f)
+				forward_dir = forward_dir.normalized_safe();
 			smath::Vec3 move_dir {};
-			if (is_key_pressed(KEY_W))
-				move_dir += look_dir;
-			if (is_key_pressed(KEY_S))
-				move_dir -= look_dir;
-			if (is_key_pressed(KEY_D))
-				move_dir += right;
-			if (is_key_pressed(KEY_A))
-				move_dir -= right;
-			if (is_key_pressed(KEY_SPACE))
-				move_dir += world_up;
-			if (is_key_pressed(KEY_LEFTSHIFT))
-				move_dir -= world_up;
+
+			if (!ctrl_down) {
+				if (is_key_down(KEY_W))
+					move_dir += forward_dir;
+				if (is_key_down(KEY_S))
+					move_dir -= forward_dir;
+				if (is_key_down(KEY_D))
+					move_dir += right;
+				if (is_key_down(KEY_A))
+					move_dir -= right;
+				if (is_key_down(KEY_SPACE))
+					move_dir += world_up;
+				if (is_key_down(KEY_LEFTSHIFT))
+					move_dir -= world_up;
+			}
 
 			if (move_dir.magnitude() > 0.0f) {
 				constexpr float move_speed { 10.0f };
@@ -795,11 +827,11 @@ auto Application::run() -> void
 			projection[1][1] *= -1;
 			auto view_projection { projection * view };
 
-			auto skybox_view = view;
+			auto skybox_view { view };
 			skybox_view[3][0] = 0.0f;
 			skybox_view[3][1] = 0.0f;
 			skybox_view[3][2] = 0.0f;
-			m_skybox.draw(gl, projection * skybox_view);
+			m_skybox.draw(gl, *m_renderer, projection * skybox_view);
 
 			gl.set_transform(view_projection);
 
@@ -930,6 +962,9 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 	auto const state { libinput_event_keyboard_get_key_state(event) };
 	bool const pressed { state == LIBINPUT_KEY_STATE_PRESSED };
 
+	if (!m_window_focused)
+		return;
+
 	if (key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL) {
 		if (pressed) {
 			++m_ctrl_pressed_count;
@@ -978,9 +1013,8 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 	}
 
 	if (m_show_imgui && pressed) {
-		bool const shift_pressed { is_key_pressed(KEY_LEFTSHIFT)
-			|| is_key_pressed(KEY_RIGHTSHIFT)
-			|| (key == KEY_LEFTSHIFT && pressed)
+		bool const shift_pressed { is_key_down(KEY_LEFTSHIFT)
+			|| is_key_down(KEY_RIGHTSHIFT) || (key == KEY_LEFTSHIFT && pressed)
 			|| (key == KEY_RIGHTSHIFT && pressed) };
 
 		if (auto ch { linux_key_to_char(key, shift_pressed) })
@@ -1013,11 +1047,32 @@ auto Application::mouse_captured(bool new_state) -> void
 	m_mouse_captured = new_state && !m_show_imgui;
 }
 
-auto Application::is_key_pressed(uint32_t key) const -> bool
+auto Application::is_key_down(uint32_t key) const -> bool
 {
 	if (key >= m_key_state.size())
 		return false;
 	return m_key_state[key];
+}
+
+auto Application::is_key_up(uint32_t key) const -> bool
+{
+	if (key >= m_key_state.size())
+		return true;
+	return !m_key_state[key];
+}
+
+auto Application::is_key_pressed(uint32_t key) const -> bool
+{
+	if (key >= m_key_state.size())
+		return false;
+	return m_key_state[key] && !m_key_state_previous[key];
+}
+
+auto Application::is_key_released(uint32_t key) const -> bool
+{
+	if (key >= m_key_state.size())
+		return false;
+	return !m_key_state[key] && m_key_state_previous[key];
 }
 
 } // namespace Lunar

@@ -290,7 +290,7 @@ auto VulkanRenderer::GL::flush() -> void
 		        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 		    .update_set(m_renderer.m_vkb.dev.device, image_set);
 
-		auto vk_image_set = vk::DescriptorSet { image_set };
+		auto vk_image_set { vk::DescriptorSet { image_set } };
 		cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
 		    m_active_pipeline->get_layout(), 0, vk_image_set, {});
 
@@ -423,22 +423,16 @@ auto VulkanRenderer::GL::draw_sphere(smath::Vec3 center, float radius,
 
 	float const pi = 3.14159265358979323846f;
 
-	// Use caller color if provided, otherwise keep current GL color state.
 	if (sphere_color.has_value())
 		color(*sphere_color);
 
-	// Build as latitude strips
 	for (int y = 0; y < rings; y++) {
-		float const v0 = static_cast<float>(y) / static_cast<float>(rings);
-		float const v1 = static_cast<float>(y + 1) / static_cast<float>(rings);
+		float const v = static_cast<float>(y + 1) / static_cast<float>(rings);
 
-		float const theta0 = v0 * pi;
-		float const theta1 = v1 * pi;
+		float const theta = v * pi;
 
-		float const sin0 = std::sin(theta0);
-		float const cos0 = std::cos(theta0);
-		float const sin1 = std::sin(theta1);
-		float const cos1 = std::cos(theta1);
+		float const s = std::sin(theta);
+		float const c = std::cos(theta);
 
 		begin(GeometryKind::TriangleStrip);
 
@@ -452,21 +446,11 @@ auto VulkanRenderer::GL::draw_sphere(smath::Vec3 center, float radius,
 
 			// Vertex on ring y+1
 			{
-				smath::Vec3 n { sin1 * cp, cos1, sin1 * sp };
+				smath::Vec3 n { s * cp, c, s * sp };
 				normal(n);
-				uv(smath::Vec2 { u, 1.0f - v1 });
+				uv(smath::Vec2 { u, 1.0f - v });
 
-				smath::Vec3 p = center + n * radius;
-				vert(p);
-			}
-
-			// Vertex on ring y
-			{
-				smath::Vec3 n { sin0 * cp, cos0, sin0 * sp };
-				normal(n);
-				uv(smath::Vec2 { u, 1.0f - v0 });
-
-				smath::Vec3 p = center + n * radius;
+				smath::Vec3 p { center + n * radius };
 				vert(p);
 			}
 		}
@@ -501,7 +485,7 @@ auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
 	        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 	    .update_set(m_renderer.m_vkb.dev.device, image_set);
 
-	auto vk_image_set = vk::DescriptorSet { image_set };
+	auto vk_image_set { vk::DescriptorSet { image_set } };
 	m_cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
 	    mesh_pipeline.get_layout(), 0, vk_image_set, {});
 
@@ -541,7 +525,7 @@ auto VulkanRenderer::GL::draw_indexed(Pipeline &pipeline,
 		    push_constants.data());
 	}
 
-	vk::DeviceSize offset = 0;
+	vk::DeviceSize offset { 0 };
 	cmd.bindVertexBuffers(0, vertex_buffer.buffer, offset);
 	cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
 	cmd.drawIndexed(index_count, 1, 0, 0, 0);
@@ -881,7 +865,7 @@ auto VulkanRenderer::vk_init() -> void
 	            void *user_data) {
 		        auto renderer { reinterpret_cast<VulkanRenderer *>(user_data) };
 
-		        auto level = Logger::Level::Debug;
+		        auto level { Logger::Level::Debug };
 		        if (message_severity
 		            & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
 			        level = Logger::Level::Error;
@@ -1254,7 +1238,7 @@ auto VulkanRenderer::imgui_init() -> void
 		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 },
 	};
 
-	VkDescriptorPoolCreateInfo pool_info = {};
+	VkDescriptorPoolCreateInfo pool_info {};
 	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 	pool_info.maxSets = 1000;
@@ -1267,7 +1251,7 @@ auto VulkanRenderer::imgui_init() -> void
 
 	ImGui_ImplSDL3_InitForVulkan(m_window);
 
-	ImGui_ImplVulkan_InitInfo init_info = {};
+	ImGui_ImplVulkan_InitInfo init_info {};
 	init_info.Instance = m_vkb.instance;
 	init_info.PhysicalDevice = m_vkb.phys_dev.physical_device;
 	init_info.Device = m_vkb.dev.device;
@@ -1281,7 +1265,8 @@ auto VulkanRenderer::imgui_init() -> void
 	    = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount
 	    = 1;
-	auto swapchain_format = static_cast<VkFormat>(m_vk.swapchain_image_format);
+	auto swapchain_format { static_cast<VkFormat>(
+		m_vk.swapchain_image_format) };
 	init_info.PipelineInfoMain.PipelineRenderingCreateInfo
 	    .pColorAttachmentFormats
 	    = &swapchain_format;
@@ -1412,7 +1397,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	emit_tracy_frame_image(frame);
 #endif
 
-	auto raw_fence = static_cast<VkFence>(frame.render_fence.get());
+	auto raw_fence { static_cast<VkFence>(frame.render_fence.get()) };
 	VK_CHECK(m_logger, vkResetFences(m_vkb.dev.device, 1, &raw_fence));
 
 	auto const acquire_result = m_device.acquireNextImageKHR(
@@ -1642,7 +1627,7 @@ auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void
 	m_vk.swapchain = m_vkb.swapchain.swapchain;
 	m_vk.swapchain_extent = vk::Extent2D { m_vkb.swapchain.extent.width,
 		m_vkb.swapchain.extent.height };
-	auto images = m_vkb.swapchain.get_images().value();
+	auto images { m_vkb.swapchain.get_images().value() };
 	m_vk.swapchain_images.assign(images.begin(), images.end());
 
 	m_vk.swapchain_image_views.clear();
@@ -2394,7 +2379,8 @@ auto VulkanRenderer::upload_mesh(
 	void *data = info.pMappedData;
 	bool mapped_here { false };
 	if (!data) {
-		VkResult res = vmaMapMemory(m_vk.allocator, staging.allocation, &data);
+		VkResult res { vmaMapMemory(
+			m_vk.allocator, staging.allocation, &data) };
 		assert(res == VK_SUCCESS);
 		mapped_here = true;
 	}

@@ -33,7 +33,10 @@ struct Application {
 	auto mouse_captured(bool new_state) -> void;
 	auto mouse_captured() const -> bool { return m_mouse_captured; }
 	auto toggle_mouse_captured() -> void { mouse_captured(!m_mouse_captured); }
+	auto is_key_down(uint32_t key) const -> bool;
+	auto is_key_up(uint32_t key) const -> bool;
 	auto is_key_pressed(uint32_t key) const -> bool;
+	auto is_key_released(uint32_t key) const -> bool;
 
 private:
 	auto init_input() -> void;
@@ -56,6 +59,7 @@ private:
 	bool m_running { true };
 	bool m_mouse_captured { false };
 	bool m_show_imgui { false };
+	bool m_window_focused { true };
 	int m_ctrl_pressed_count { 0 };
 	std::uint32_t m_screenshot_index { 0 };
 
@@ -66,6 +70,7 @@ private:
 	float m_mouse_sensitivity { 0.001f };
 
 	std::array<bool, KEY_MAX + 1> m_key_state {};
+	std::array<bool, KEY_MAX + 1> m_key_state_previous {};
 
 	Camera m_camera;
 	PolarCoordinate m_cursor;

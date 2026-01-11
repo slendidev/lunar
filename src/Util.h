@@ -29,7 +29,7 @@ template<typename F> privDefer<F> defer_func(F f) { return privDefer<F>(f); }
 #define VK_CHECK(logger, x) \
 	do { \
 		auto err { x }; \
-		auto result = vk::Result(err); \
+		auto result { vk::Result(err) }; \
 		if (result != vk::Result::eSuccess) { \
 			(logger).err("Detected Vulkan error: {}", vk::to_string(result)); \
 			throw std::runtime_error("Vulkan error"); \

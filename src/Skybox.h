@@ -17,15 +17,19 @@ struct Skybox {
 	auto init(VulkanRenderer &renderer, std::filesystem::path const &path)
 	    -> void;
 	auto destroy(VulkanRenderer &renderer) -> void;
-	auto draw(VulkanRenderer::GL &gl, smath::Mat4 const &mvp) -> void;
+	auto draw(VulkanRenderer::GL &gl, VulkanRenderer &renderer,
+	    smath::Mat4 const &mvp) -> void;
 
 private:
+	auto rebuild_pipeline(VulkanRenderer &renderer) -> bool;
+
 	Pipeline m_pipeline {};
 	GPUMeshBuffers m_cube_mesh {};
 	AllocatedImage m_cubemap {};
 	vk::UniqueSampler m_sampler {};
 	vk::UniqueDescriptorPool m_descriptor_pool {};
 	vk::DescriptorSet m_descriptor_set {};
+	vk::SampleCountFlagBits m_pipeline_samples { vk::SampleCountFlagBits::e1 };
 	uint32_t m_index_count { 0 };
 };
 

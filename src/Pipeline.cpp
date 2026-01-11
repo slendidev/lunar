@@ -27,13 +27,13 @@ auto Pipeline::Builder::set_push_constant_ranges(
 auto Pipeline::Builder::build_compute(
     vk::PipelineShaderStageCreateInfo const &stage) -> Pipeline
 {
-	auto pipeline_layout = build_layout();
+	auto pipeline_layout { build_layout() };
 
 	vk::ComputePipelineCreateInfo pipeline_ci {};
 	pipeline_ci.layout = pipeline_layout.get();
 	pipeline_ci.stage = stage;
 
-	auto pipeline_ret = m_device.createComputePipelineUnique({}, pipeline_ci);
+	auto pipeline_ret { m_device.createComputePipelineUnique({}, pipeline_ci) };
 	VK_CHECK(m_logger, pipeline_ret.result);
 
 	return Pipeline {
@@ -46,14 +46,14 @@ auto Pipeline::Builder::build_graphics(
     std::function<GraphicsPipelineBuilder &(GraphicsPipelineBuilder &)> const
         &configure) -> Pipeline
 {
-	auto pipeline_layout = build_layout();
+	auto pipeline_layout { build_layout() };
 
-	auto builder = GraphicsPipelineBuilder { m_logger };
+	auto builder { GraphicsPipelineBuilder { m_logger } };
 	builder.set_pipeline_layout(
 	    static_cast<VkPipelineLayout>(pipeline_layout.get()));
 	configure(builder);
 
-	auto pipeline_handle = builder.build(static_cast<VkDevice>(m_device));
+	auto pipeline_handle { builder.build(static_cast<VkDevice>(m_device)) };
 	vk::UniquePipeline pipeline_unique(pipeline_handle,
 	    vk::detail::ObjectDestroy<vk::Device,
 	        VULKAN_HPP_DEFAULT_DISPATCHER_TYPE>(m_device));

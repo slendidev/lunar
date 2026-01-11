@@ -23,7 +23,7 @@ struct FaceOffset {
 	uint32_t y;
 };
 
-constexpr std::array<FaceOffset, 6> kCrossOffsets {
+constexpr std::array<FaceOffset, 6> CROSS_OFFSETS {
 	FaceOffset { 2, 1 }, // +X
 	FaceOffset { 0, 1 }, // -X
 	FaceOffset { 1, 0 }, // +Y
@@ -33,6 +33,83 @@ constexpr std::array<FaceOffset, 6> kCrossOffsets {
 };
 
 } // namespace
+
+auto Skybox::rebuild_pipeline(VulkanRenderer &renderer) -> bool
+{
+	Pipeline::Builder pipeline_builder { renderer.device(), renderer.logger() };
+
+	uint8_t skybox_vert_shader_data[] {
+#embed "skybox_vert.spv"
+	};
+	auto skybox_vert_shader
+	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_vert_shader_data,
+	                                     sizeof(skybox_vert_shader_data)),
+	        renderer.device());
+	if (!skybox_vert_shader) {
+		renderer.logger().err("Failed to load skybox vert shader");
+		return false;
+	}
+
+	uint8_t skybox_frag_shader_data[] {
+#embed "skybox_frag.spv"
+	};
+	auto skybox_frag_shader
+	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_frag_shader_data,
+	                                     sizeof(skybox_frag_shader_data)),
+	        renderer.device());
+	if (!skybox_frag_shader) {
+		renderer.logger().err("Failed to load skybox frag shader");
+		return false;
+	}
+
+	vk::PushConstantRange push_constant_range {};
+	push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+	push_constant_range.offset = 0;
+	push_constant_range.size = sizeof(SkyboxPushConstants);
+
+	std::array push_constant_ranges { push_constant_range };
+	pipeline_builder.set_push_constant_ranges(push_constant_ranges);
+	std::array descriptor_set_layouts {
+		renderer.single_image_descriptor_layout()
+	};
+	pipeline_builder.set_descriptor_set_layouts(descriptor_set_layouts);
+
+	VkVertexInputBindingDescription binding {};
+	binding.binding = 0;
+	binding.stride = sizeof(Vertex);
+	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription attribute {};
+	attribute.location = 0;
+	attribute.binding = 0;
+	attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
+	attribute.offset = offsetof(Vertex, position);
+
+	std::array bindings { binding };
+	std::array attributes { attribute };
+
+	m_pipeline = pipeline_builder.build_graphics(
+	    [&](GraphicsPipelineBuilder &builder) -> GraphicsPipelineBuilder & {
+		    builder.set_vertex_input(bindings, attributes);
+		    return builder
+		        .set_shaders(skybox_vert_shader.get(), skybox_frag_shader.get())
+		        .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		        .set_polygon_mode(VK_POLYGON_MODE_FILL)
+		        .set_cull_mode(
+		            VK_CULL_MODE_FRONT_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		        .set_multisampling(
+		            static_cast<VkSampleCountFlagBits>(renderer.msaa_samples()))
+		        .disable_blending()
+		        .enable_depth_testing(false, VK_COMPARE_OP_LESS_OR_EQUAL)
+		        .set_color_attachment_format(
+		            static_cast<VkFormat>(renderer.draw_image_format()))
+		        .set_depth_format(
+		            static_cast<VkFormat>(renderer.depth_image_format()));
+	    });
+
+	m_pipeline_samples = renderer.msaa_samples();
+	return true;
+}
 
 auto Skybox::init(VulkanRenderer &renderer, std::filesystem::path const &path)
     -> void
@@ -61,10 +138,10 @@ auto Skybox::init(VulkanRenderer &renderer, std::filesystem::path const &path)
 	uint32_t const face_size = texture.width / 4;
 	size_t const face_bytes = static_cast<size_t>(face_size) * face_size * 4;
 
-	std::vector<uint8_t> cubemap_pixels(face_bytes * kCrossOffsets.size());
+	std::vector<uint8_t> cubemap_pixels(face_bytes * CROSS_OFFSETS.size());
 
-	for (size_t face = 0; face < kCrossOffsets.size(); ++face) {
-		auto const offset = kCrossOffsets[face];
+	for (size_t face = 0; face < CROSS_OFFSETS.size(); ++face) {
+		auto const offset = CROSS_OFFSETS[face];
 		for (uint32_t y = 0; y < face_size; ++y) {
 			for (uint32_t x = 0; x < face_size; ++x) {
 				uint32_t const src_x = offset.x * face_size + x;
@@ -108,7 +185,9 @@ auto Skybox::init(VulkanRenderer &renderer, std::filesystem::path const &path)
 	vk::DescriptorSetAllocateInfo alloc_info {};
 	alloc_info.descriptorPool = m_descriptor_pool.get();
 	alloc_info.descriptorSetCount = 1;
-	vk::DescriptorSetLayout layout = renderer.single_image_descriptor_layout();
+	vk::DescriptorSetLayout layout {
+		renderer.single_image_descriptor_layout()
+	};
 	alloc_info.pSetLayouts = &layout;
 	m_descriptor_set
 	    = renderer.device().allocateDescriptorSets(alloc_info).front();
@@ -183,78 +262,10 @@ auto Skybox::init(VulkanRenderer &renderer, std::filesystem::path const &path)
 	m_index_count = static_cast<uint32_t>(indices.size());
 	m_cube_mesh = renderer.upload_mesh(indices, vertices);
 
-	Pipeline::Builder pipeline_builder { renderer.device(), renderer.logger() };
-
-	uint8_t skybox_vert_shader_data[] {
-#embed "skybox_vert.spv"
-	};
-	auto skybox_vert_shader
-	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_vert_shader_data,
-	                                     sizeof(skybox_vert_shader_data)),
-	        renderer.device());
-	if (!skybox_vert_shader) {
-		renderer.logger().err("Failed to load skybox vert shader");
+	if (!rebuild_pipeline(renderer)) {
 		ok = false;
 		return;
 	}
-
-	uint8_t skybox_frag_shader_data[] {
-#embed "skybox_frag.spv"
-	};
-	auto skybox_frag_shader
-	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_frag_shader_data,
-	                                     sizeof(skybox_frag_shader_data)),
-	        renderer.device());
-	if (!skybox_frag_shader) {
-		renderer.logger().err("Failed to load skybox frag shader");
-		ok = false;
-		return;
-	}
-
-	vk::PushConstantRange push_constant_range {};
-	push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
-	push_constant_range.offset = 0;
-	push_constant_range.size = sizeof(SkyboxPushConstants);
-
-	std::array push_constant_ranges { push_constant_range };
-	pipeline_builder.set_push_constant_ranges(push_constant_ranges);
-	std::array descriptor_set_layouts {
-		renderer.single_image_descriptor_layout()
-	};
-	pipeline_builder.set_descriptor_set_layouts(descriptor_set_layouts);
-
-	VkVertexInputBindingDescription binding {};
-	binding.binding = 0;
-	binding.stride = sizeof(Vertex);
-	binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-	VkVertexInputAttributeDescription attribute {};
-	attribute.location = 0;
-	attribute.binding = 0;
-	attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
-	attribute.offset = offsetof(Vertex, position);
-
-	std::array bindings { binding };
-	std::array attributes { attribute };
-
-	m_pipeline = pipeline_builder.build_graphics(
-	    [&](GraphicsPipelineBuilder &builder) -> GraphicsPipelineBuilder & {
-		    builder.set_vertex_input(bindings, attributes);
-		    return builder
-		        .set_shaders(skybox_vert_shader.get(), skybox_frag_shader.get())
-		        .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
-		        .set_polygon_mode(VK_POLYGON_MODE_FILL)
-		        .set_cull_mode(
-		            VK_CULL_MODE_FRONT_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
-		        .set_multisampling(
-		            static_cast<VkSampleCountFlagBits>(renderer.msaa_samples()))
-		        .disable_blending()
-		        .enable_depth_testing(false, VK_COMPARE_OP_LESS_OR_EQUAL)
-		        .set_color_attachment_format(
-		            static_cast<VkFormat>(renderer.draw_image_format()))
-		        .set_depth_format(
-		            static_cast<VkFormat>(renderer.depth_image_format()));
-	    });
 
 	ok = true;
 }
@@ -273,6 +284,7 @@ auto Skybox::destroy(VulkanRenderer &renderer) -> void
 	m_sampler.reset();
 	m_descriptor_pool.reset();
 	m_pipeline.reset();
+	m_pipeline_samples = vk::SampleCountFlagBits::e1;
 	m_descriptor_set = vk::DescriptorSet {};
 	m_cube_mesh = {};
 	m_cubemap = {};
@@ -280,14 +292,21 @@ auto Skybox::destroy(VulkanRenderer &renderer) -> void
 	ok = false;
 }
 
-auto Skybox::draw(VulkanRenderer::GL &gl, smath::Mat4 const &mvp) -> void
+auto Skybox::draw(VulkanRenderer::GL &gl, VulkanRenderer &renderer,
+    smath::Mat4 const &mvp) -> void
 {
 	if (!ok) {
 		return;
 	}
 
+	if (m_pipeline_samples != renderer.msaa_samples()) {
+		if (!rebuild_pipeline(renderer)) {
+			return;
+		}
+	}
+
 	SkyboxPushConstants push_constants { mvp };
-	auto bytes = std::as_bytes(std::span { &push_constants, 1 });
+	auto bytes { std::as_bytes(std::span { &push_constants, 1 }) };
 	gl.draw_indexed(m_pipeline, m_descriptor_set, m_cube_mesh.vertex_buffer,
 	    m_cube_mesh.index_buffer, m_index_count, bytes);
 }
