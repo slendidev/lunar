@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <memory>
 
 #include <SDL3/SDL_video.h>
@@ -48,6 +49,7 @@ private:
 	bool m_mouse_captured { false };
 	bool m_show_imgui { false };
 	int m_ctrl_pressed_count { 0 };
+	std::uint32_t m_screenshot_index { 0 };
 
 	double m_mouse_x { 0.0 };
 	double m_mouse_y { 0.0 };

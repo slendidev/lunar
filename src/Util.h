@@ -36,6 +36,14 @@ template<typename F> privDefer<F> defer_func(F f) { return privDefer<F>(f); }
 		} \
 	} while (0)
 
+#if defined(TRACY_ENABLE)
+#	define GZoneScopedN(name) ZoneScopedN(name)
+#else
+#	define GZoneScopedN(name) \
+		do { \
+		} while (0)
+#endif
+
 namespace vkutil {
 
 auto transition_image(vk::CommandBuffer cmd, vk::Image image,

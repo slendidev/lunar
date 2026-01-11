@@ -2,15 +2,34 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <fcntl.h>
+#include <format>
 #include <iostream>
 #include <numbers>
 #include <optional>
 #include <print>
 #include <stdexcept>
 #include <unistd.h>
+
+#if defined(__clang__)
+#	pragma clang diagnostic push
+#	pragma clang diagnostic ignored "-Wreserved-identifier"
+#	pragma clang diagnostic ignored "-Wimplicit-fallthrough"
+#	pragma clang diagnostic ignored "-Wcast-qual"
+#	pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#	pragma clang diagnostic ignored "-Wused-but-marked-unused"
+#	pragma clang diagnostic ignored "-Wmissing-prototypes"
+#	pragma clang diagnostic ignored "-Wextra-semi-stmt"
+#	pragma clang diagnostic ignored "-Wimplicit-int-conversion"
+#endif
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../thirdparty/stb/stb_image_write.h"
+#if defined(__clang__)
+#	pragma clang diagnostic pop
+#endif
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_init.h>
@@ -428,9 +447,7 @@ auto Application::run() -> void
 	uint64_t last { 0 };
 	float fps { 0.0f };
 	while (m_running) {
-#if defined(TRACY_ENABLE)
-		ZoneScopedN("Frame");
-#endif
+		GZoneScopedN("Frame");
 		uint64_t now { SDL_GetTicks() };
 		uint64_t dt { now - last };
 		float dt_seconds { static_cast<float>(dt) / 1000.0f };
@@ -439,233 +456,246 @@ auto Application::run() -> void
 		if (dt > 0)
 			fps = 1000.0f / (float)dt;
 
-		process_libinput_events();
+		{
+			GZoneScopedN("Input");
+			process_libinput_events();
 
-		while (SDL_PollEvent(&e)) {
-			bool forward_to_imgui { false };
-			if (e.type == SDL_EVENT_QUIT) {
-				m_running = false;
-			} else if (e.type == SDL_EVENT_WINDOW_RESIZED) {
-				int width {}, height {};
-				SDL_GetWindowSize(m_window, &width, &height);
-				m_renderer->resize(static_cast<uint32_t>(width),
-				    static_cast<uint32_t>(height));
-				clamp_mouse_to_window(width, height);
-				forward_to_imgui = true;
-			} else if (e.type == SDL_EVENT_MOUSE_MOTION) {
-				m_mouse_x = e.motion.x;
-				m_mouse_y = e.motion.y;
-				m_mouse_dx = e.motion.xrel;
-				m_mouse_dy = e.motion.yrel;
-				forward_to_imgui = true;
-			} else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
-			    || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-				m_mouse_x = e.button.x;
-				m_mouse_y = e.button.y;
-				forward_to_imgui = true;
-			} else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-				m_mouse_x = e.wheel.mouse_x;
-				m_mouse_y = e.wheel.mouse_y;
-				forward_to_imgui = true;
+			while (SDL_PollEvent(&e)) {
+				bool forward_to_imgui { false };
+				if (e.type == SDL_EVENT_QUIT) {
+					m_running = false;
+				} else if (e.type == SDL_EVENT_WINDOW_RESIZED) {
+					int width {}, height {};
+					SDL_GetWindowSize(m_window, &width, &height);
+					m_renderer->resize(static_cast<uint32_t>(width),
+					    static_cast<uint32_t>(height));
+					clamp_mouse_to_window(width, height);
+					forward_to_imgui = true;
+				} else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+					m_mouse_x = e.motion.x;
+					m_mouse_y = e.motion.y;
+					m_mouse_dx = e.motion.xrel;
+					m_mouse_dy = e.motion.yrel;
+					forward_to_imgui = true;
+				} else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+				    || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+					m_mouse_x = e.button.x;
+					m_mouse_y = e.button.y;
+					forward_to_imgui = true;
+				} else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+					m_mouse_x = e.wheel.mouse_x;
+					m_mouse_y = e.wheel.mouse_y;
+					forward_to_imgui = true;
+				}
+
+				if (forward_to_imgui)
+					ImGui_ImplSDL3_ProcessEvent(&e);
+			}
+		}
+
+		{
+			GZoneScopedN("CameraUpdate");
+
+			auto const target_offset { m_camera.target - m_camera.position };
+			auto const target_distance { target_offset.magnitude() };
+			auto const target_polar { PolarCoordinate::from_vec3(
+				target_offset) };
+			// Keep cursor angles in sync with externally-updated targets so
+			// view aligns to the target direction. Preserve radius when the
+			// target sits on top of the camera to avoid collapsing it.
+			if (target_distance > 0.0f) {
+				m_cursor.r = target_distance;
+				m_cursor.theta = target_polar.theta;
+				m_cursor.phi = target_polar.phi;
 			}
 
-			if (forward_to_imgui)
-				ImGui_ImplSDL3_ProcessEvent(&e);
+			bool rotated_this_frame { false };
+			if (mouse_captured()) {
+				constexpr float phi_epsilon { smath::deg(5.0f) };
+
+				m_cursor.theta
+				    += static_cast<float>(m_mouse_dx) * m_mouse_sensitivity;
+				m_cursor.phi
+				    += static_cast<float>(m_mouse_dy) * m_mouse_sensitivity;
+				m_cursor.phi = std::clamp(m_cursor.phi, phi_epsilon,
+				    std::numbers::pi_v<float> - phi_epsilon);
+				rotated_this_frame = (m_mouse_dx != 0.0 || m_mouse_dy != 0.0);
+			}
+
+			auto look_dir { m_cursor.to_vec3().normalized_safe() };
+			if (!rotated_this_frame && target_distance > 0.0f) {
+				look_dir = target_offset.normalized_safe();
+			}
+			if (look_dir.magnitude() == 0.0f)
+				look_dir = smath::Vec3 { 0.0f, 0.0f, -1.0f };
+			smath::Vec3 const world_up { 0.0f, 1.0f, 0.0f };
+			auto right { look_dir.cross(world_up).normalized_safe() };
+			if (right.magnitude() == 0.0f)
+				right = smath::Vec3 { 1.0f, 0.0f, 0.0f };
+			auto camera_up { right.cross(look_dir).normalized_safe() };
+			if (camera_up.magnitude() == 0.0f)
+				camera_up = world_up;
+
+			smath::Vec3 move_dir {};
+			if (is_key_pressed(KEY_W))
+				move_dir += look_dir;
+			if (is_key_pressed(KEY_S))
+				move_dir -= look_dir;
+			if (is_key_pressed(KEY_D))
+				move_dir += right;
+			if (is_key_pressed(KEY_A))
+				move_dir -= right;
+			if (is_key_pressed(KEY_SPACE))
+				move_dir += world_up;
+			if (is_key_pressed(KEY_LEFTSHIFT))
+				move_dir -= world_up;
+
+			if (move_dir.magnitude() > 0.0f) {
+				constexpr float move_speed { 10.0f };
+				move_dir = move_dir.normalized_safe();
+				m_camera.position += move_dir * (move_speed * dt_seconds);
+			}
+
+			if (!m_show_imgui) {
+				m_camera.up = camera_up;
+				auto const distance = target_distance > 0.0f
+				    ? target_distance
+				    : std::max(1.0f, m_cursor.r);
+				m_camera.target = m_camera.position + look_dir * distance;
+			}
+
+			m_mouse_dx = 0.0;
+			m_mouse_dy = 0.0;
 		}
 
-		auto const target_offset { m_camera.target - m_camera.position };
-		auto const target_distance { target_offset.magnitude() };
-		auto const target_polar { PolarCoordinate::from_vec3(target_offset) };
-		// Keep cursor angles in sync with externally-updated targets so view
-		// aligns to the target direction. Preserve radius when the target sits
-		// on top of the camera to avoid collapsing it.
-		if (target_distance > 0.0f) {
-			m_cursor.r = target_distance;
-			m_cursor.theta = target_polar.theta;
-			m_cursor.phi = target_polar.phi;
-		}
+		{
+			GZoneScopedN("ImGui");
+			ImGui_ImplSDL3_NewFrame();
+			ImGui_ImplVulkan_NewFrame();
 
-		bool rotated_this_frame { false };
-		if (mouse_captured()) {
-			constexpr float phi_epsilon { smath::deg(5.0f) };
+			ImGui::NewFrame();
 
-			m_cursor.theta
-			    += static_cast<float>(m_mouse_dx) * m_mouse_sensitivity;
-			m_cursor.phi
-			    += static_cast<float>(m_mouse_dy) * m_mouse_sensitivity;
-			m_cursor.phi = std::clamp(m_cursor.phi, phi_epsilon,
-			    std::numbers::pi_v<float> - phi_epsilon);
-			rotated_this_frame = (m_mouse_dx != 0.0 || m_mouse_dy != 0.0);
-		}
-
-		auto look_dir { m_cursor.to_vec3().normalized_safe() };
-		if (!rotated_this_frame && target_distance > 0.0f) {
-			look_dir = target_offset.normalized_safe();
-		}
-		if (look_dir.magnitude() == 0.0f)
-			look_dir = smath::Vec3 { 0.0f, 0.0f, -1.0f };
-		smath::Vec3 const world_up { 0.0f, 1.0f, 0.0f };
-		auto right { look_dir.cross(world_up).normalized_safe() };
-		if (right.magnitude() == 0.0f)
-			right = smath::Vec3 { 1.0f, 0.0f, 0.0f };
-		auto camera_up { right.cross(look_dir).normalized_safe() };
-		if (camera_up.magnitude() == 0.0f)
-			camera_up = world_up;
-
-		smath::Vec3 move_dir {};
-		if (is_key_pressed(KEY_W))
-			move_dir += look_dir;
-		if (is_key_pressed(KEY_S))
-			move_dir -= look_dir;
-		if (is_key_pressed(KEY_D))
-			move_dir += right;
-		if (is_key_pressed(KEY_A))
-			move_dir -= right;
-		if (is_key_pressed(KEY_SPACE))
-			move_dir += world_up;
-		if (is_key_pressed(KEY_LEFTSHIFT))
-			move_dir -= world_up;
-
-		if (move_dir.magnitude() > 0.0f) {
-			constexpr float move_speed { 10.0f };
-			move_dir = move_dir.normalized_safe();
-			m_camera.position += move_dir * (move_speed * dt_seconds);
-		}
-
-		if (!m_show_imgui) {
-			m_camera.up = camera_up;
-			auto const distance = target_distance > 0.0f
-			    ? target_distance
-			    : std::max(1.0f, m_cursor.r);
-			m_camera.target = m_camera.position + look_dir * distance;
-		}
-
-		m_mouse_dx = 0.0;
-		m_mouse_dy = 0.0;
-
-		ImGui_ImplSDL3_NewFrame();
-		ImGui_ImplVulkan_NewFrame();
-
-		ImGui::NewFrame();
-
-		ImGui::SetNextWindowSize({ 300, 100 });
-		ImGui::SetNextWindowPos({ 0, 0 });
-		ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
-		bool debug_open { ImGui::Begin("Debug Info", nullptr,
-			ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize) };
-		if (debug_open) {
-			ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
-			ImGui::Text("%s",
-			    std::format("Cam pos: ({:.2f}, {:.2f}, {:.2f})",
-			        m_camera.position.x(), m_camera.position.y(),
-			        m_camera.position.z())
-			        .c_str());
-			ImGui::Text("%s",
-			    std::format("Cam tgt: ({:.2f}, {:.2f}, {:.2f})",
-			        m_camera.target.x(), m_camera.target.y(),
-			        m_camera.target.z())
-			        .c_str());
-			ImGui::Text("%s",
-			    std::format("Cam up:  ({:.2f}, {:.2f}, {:.2f})",
-			        m_camera.up.x(), m_camera.up.y(), m_camera.up.z())
-			        .c_str());
-			ImGui::Text("%s",
-			    std::format("Cursor r/theta/phi: {:.2f}, {:.2f}, {:.2f}",
-			        m_cursor.r, m_cursor.theta, m_cursor.phi)
-			        .c_str());
-		}
-		ImGui::End();
-		ImGui::PopStyleColor();
-
-		if (m_show_imgui) {
-			ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
-			ImGui::ShowDemoWindow();
-
-			ImGui::SetNextWindowSize({ 300, -1 }, ImGuiCond_Once);
-			bool fun_menu_open { ImGui::Begin("Fun menu") };
-			if (fun_menu_open) {
-				static std::array<char const *, 4> const aa_items {
-					"None",
-					"MSAA 2X",
-					"MSAA 4X",
-					"MSAA 8X",
-				};
-				int selected_item {
-					static_cast<int>(m_renderer->antialiasing()),
-				};
-				if (ImGui::Combo("Antialiasing", &selected_item,
-				        aa_items.data(), aa_items.size())) {
-					m_renderer->set_antialiasing(
-					    static_cast<VulkanRenderer::AntiAliasingKind>(
-					        selected_item));
-				}
-
-				if (ImGui::CollapsingHeader("Camera",
-				        ImGuiTreeNodeFlags_Framed
-				            | ImGuiTreeNodeFlags_SpanAvailWidth
-				            | ImGuiTreeNodeFlags_DefaultOpen)) {
-					auto const camera_offset { m_camera.target
-						- m_camera.position };
-					auto const camera_distance { camera_offset.magnitude() };
-					auto const camera_direction {
-						camera_offset.normalized_safe()
-					};
-
-					ImGui::SliderFloat("Mouse sensitivity",
-					    &m_mouse_sensitivity, 0.0001f, 0.01f, "%.4f");
-					constexpr float position_step { 0.05f };
-					constexpr float target_step { 0.05f };
-					bool position_changed { ImGui::DragFloat3(
-						"Pos", m_camera.position.data(), position_step) };
-					bool target_changed { ImGui::DragFloat3(
-						"Target", m_camera.target.data(), target_step) };
-					ImGui::DragFloat3("Up", m_camera.up.data());
-
-					if (position_changed && !target_changed) {
-						auto offset { m_cursor.to_vec3() };
-						auto const preserve_distance { camera_distance > 0.0f
-							    ? camera_distance
-							    : offset.magnitude() };
-
-						if (offset.magnitude() == 0.0f
-						    && camera_direction.magnitude() > 0.0f) {
-							offset = camera_direction * preserve_distance;
-						}
-
-						if (offset.magnitude() > 0.0f) {
-							m_camera.target = m_camera.position + offset;
-						}
-					}
-
-					if (target_changed && !position_changed) {
-						auto const new_offset { m_camera.target
-							- m_camera.position };
-						auto new_direction { new_offset.normalized_safe() };
-						auto const preserve_distance { camera_distance > 0.0f
-							    ? camera_distance
-							    : new_offset.magnitude() };
-
-						if (new_direction.magnitude() == 0.0f) {
-							new_direction = camera_direction;
-						}
-
-						if (new_direction.magnitude() > 0.0f
-						    && preserve_distance > 0.0f) {
-							m_camera.position = m_camera.target
-							    - new_direction * preserve_distance;
-						}
-					}
-				}
+			ImGui::SetNextWindowSize({ 300, 100 });
+			ImGui::SetNextWindowPos({ 0, 0 });
+			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
+			bool debug_open { ImGui::Begin("Debug Info", nullptr,
+				ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize) };
+			if (debug_open) {
+				ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
+				ImGui::Text("%s",
+				    std::format("Cam pos: ({:.2f}, {:.2f}, {:.2f})",
+				        m_camera.position.x(), m_camera.position.y(),
+				        m_camera.position.z())
+				        .c_str());
+				ImGui::Text("%s",
+				    std::format("Cam tgt: ({:.2f}, {:.2f}, {:.2f})",
+				        m_camera.target.x(), m_camera.target.y(),
+				        m_camera.target.z())
+				        .c_str());
+				ImGui::Text("%s",
+				    std::format("Cam up:  ({:.2f}, {:.2f}, {:.2f})",
+				        m_camera.up.x(), m_camera.up.y(), m_camera.up.z())
+				        .c_str());
+				ImGui::Text("%s",
+				    std::format("Cursor r/theta/phi: {:.2f}, {:.2f}, {:.2f}",
+				        m_cursor.r, m_cursor.theta, m_cursor.phi)
+				        .c_str());
 			}
 			ImGui::End();
+			ImGui::PopStyleColor();
+
+			if (m_show_imgui) {
+				ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
+				ImGui::ShowDemoWindow();
+
+				ImGui::SetNextWindowSize({ 300, -1 }, ImGuiCond_Once);
+				bool fun_menu_open { ImGui::Begin("Fun menu") };
+				if (fun_menu_open) {
+					static std::array<char const *, 4> const aa_items {
+						"None",
+						"MSAA 2X",
+						"MSAA 4X",
+						"MSAA 8X",
+					};
+					int selected_item {
+						static_cast<int>(m_renderer->antialiasing()),
+					};
+					if (ImGui::Combo("Antialiasing", &selected_item,
+					        aa_items.data(), aa_items.size())) {
+						m_renderer->set_antialiasing(
+						    static_cast<VulkanRenderer::AntiAliasingKind>(
+						        selected_item));
+					}
+
+					if (ImGui::CollapsingHeader("Camera",
+					        ImGuiTreeNodeFlags_Framed
+					            | ImGuiTreeNodeFlags_SpanAvailWidth
+					            | ImGuiTreeNodeFlags_DefaultOpen)) {
+						auto const camera_offset { m_camera.target
+							- m_camera.position };
+						auto const camera_distance {
+							camera_offset.magnitude()
+						};
+						auto const camera_direction {
+							camera_offset.normalized_safe()
+						};
+
+						ImGui::SliderFloat("Mouse sensitivity",
+						    &m_mouse_sensitivity, 0.0001f, 0.01f, "%.4f");
+						constexpr float position_step { 0.05f };
+						constexpr float target_step { 0.05f };
+						bool position_changed { ImGui::DragFloat3(
+							"Pos", m_camera.position.data(), position_step) };
+						bool target_changed { ImGui::DragFloat3(
+							"Target", m_camera.target.data(), target_step) };
+						ImGui::DragFloat3("Up", m_camera.up.data());
+
+						if (position_changed && !target_changed) {
+							auto offset { m_cursor.to_vec3() };
+							auto const preserve_distance {
+								camera_distance > 0.0f ? camera_distance
+								                       : offset.magnitude()
+							};
+
+							if (offset.magnitude() == 0.0f
+							    && camera_direction.magnitude() > 0.0f) {
+								offset = camera_direction * preserve_distance;
+							}
+
+							if (offset.magnitude() > 0.0f) {
+								m_camera.target = m_camera.position + offset;
+							}
+						}
+
+						if (target_changed && !position_changed) {
+							auto const new_offset { m_camera.target
+								- m_camera.position };
+							auto new_direction { new_offset.normalized_safe() };
+							auto const preserve_distance {
+								camera_distance > 0.0f ? camera_distance
+								                       : new_offset.magnitude()
+							};
+
+							if (new_direction.magnitude() == 0.0f) {
+								new_direction = camera_direction;
+							}
+
+							if (new_direction.magnitude() > 0.0f
+							    && preserve_distance > 0.0f) {
+								m_camera.position = m_camera.target
+								    - new_direction * preserve_distance;
+							}
+						}
+					}
+				}
+				ImGui::End();
+			}
+
+			ImGui::Render();
 		}
 
-		ImGui::Render();
-
 		m_renderer->render([&](VulkanRenderer::GL &gl) {
-#if defined(TRACY_ENABLE)
-			ZoneScopedN("Render");
-#endif
+			GZoneScopedN("Render");
 			auto view { smath::matrix_look_at(
 				m_camera.position, m_camera.target, m_camera.up) };
 			auto const draw_extent = m_renderer->draw_extent();
@@ -819,6 +849,34 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 		bool const new_show_imgui { !m_show_imgui };
 		m_show_imgui = new_show_imgui;
 		mouse_captured(!new_show_imgui);
+	}
+
+	if (pressed && key == KEY_F12) {
+		auto screenshot { std::optional<VulkanRenderer::ScreenshotPixels> {} };
+		if (m_renderer) {
+			screenshot = m_renderer->get_screenshot_pixels();
+		}
+
+		if (!screenshot) {
+			m_logger.warn("Screenshot not ready");
+			return;
+		}
+
+		auto const extent { screenshot->extent };
+		auto const stride { static_cast<int>(extent.width * 4) };
+		auto const index { m_screenshot_index++ };
+		auto const now { std::chrono::system_clock::now() };
+		auto filename { std::format(
+			"screenshot_{:%Y%m%d_%H%M%S}_{:04}.png", now, index) };
+		int const result { stbi_write_png(filename.c_str(),
+			static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
+			screenshot->pixels.data(), stride) };
+
+		if (result == 0) {
+			m_logger.err("Failed to write screenshot {}", filename);
+		} else {
+			m_logger.info("Saved screenshot {}", filename);
+		}
 	}
 
 	if (auto imgui_key { linux_key_to_imgui(key) }) {

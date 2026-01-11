@@ -1,11 +1,14 @@
 #define VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include "VulkanRenderer.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <print>
 #include <stdexcept>
@@ -18,12 +21,15 @@
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
 
+#if defined(TRACY_ENABLE)
+#	include <tracy/Tracy.hpp>
+#endif
+
 #include "DescriptorLayoutBuilder.h"
 #include "DescriptorWriter.h"
 #include "GraphicsPipelineBuilder.h"
 #include "Util.h"
-
-VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE;
 
 namespace Lunar {
 
@@ -632,6 +638,11 @@ VulkanRenderer::~VulkanRenderer()
 	m_vk.mesh_pipeline_culled.reset();
 	m_vk.default_sampler_linear.reset();
 	m_vk.default_sampler_nearest.reset();
+
+	if (m_latest_screenshot) {
+		destroy_image(*m_latest_screenshot);
+		m_latest_screenshot.reset();
+	}
 
 	destroy_swapchain();
 	destroy_draw_image();
@@ -1369,6 +1380,10 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
 	frame.deletion_queue.flush();
 	frame.frame_descriptors.clear_pools(m_vkb.dev.device);
+	emit_frame_screenshot(frame);
+#if defined(TRACY_ENABLE)
+	emit_tracy_frame_image(frame);
+#endif
 
 	auto raw_fence = static_cast<VkFence>(frame.render_fence.get());
 	VK_CHECK(m_logger, vkResetFences(m_vkb.dev.device, 1, &raw_fence));
@@ -1438,9 +1453,92 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 
 	draw_imgui(cmd, m_vk.swapchain_image_views.at(swapchain_image_idx).get());
 
-	vkutil::transition_image(cmd, m_vk.swapchain_images[swapchain_image_idx],
+	vkutil::transition_image(cmd, m_vk.swapchain_images.at(swapchain_image_idx),
 	    vk::ImageLayout::eColorAttachmentOptimal,
-	    vk::ImageLayout::ePresentSrcKHR);
+	    vk::ImageLayout::eTransferSrcOptimal);
+
+	if (frame.screenshot_buffer.buffer) {
+		vk::BufferImageCopy screenshot_copy {};
+		screenshot_copy.imageSubresource.aspectMask
+		    = vk::ImageAspectFlagBits::eColor;
+		screenshot_copy.imageSubresource.mipLevel = 0;
+		screenshot_copy.imageSubresource.baseArrayLayer = 0;
+		screenshot_copy.imageSubresource.layerCount = 1;
+		screenshot_copy.imageExtent
+		    = vk::Extent3D { m_vk.swapchain_extent.width,
+			      m_vk.swapchain_extent.height, 1 };
+
+		cmd.copyImageToBuffer(m_vk.swapchain_images.at(swapchain_image_idx),
+		    vk::ImageLayout::eTransferSrcOptimal,
+		    frame.screenshot_buffer.buffer, screenshot_copy);
+		frame.screenshot_ready = true;
+	} else {
+		frame.screenshot_ready = false;
+	}
+
+#if defined(TRACY_ENABLE)
+	constexpr std::uint64_t tracy_frame_stride { 10 };
+	bool const tracy_capture { TracyIsConnected
+		&& (m_vk.frame_number % tracy_frame_stride == 0) };
+	frame.tracy_frame_ready = false;
+	frame.frame_image_ready = false;
+	if (tracy_capture && frame.frame_image_buffer.buffer
+	    && m_vk.tracy_capture_image.image) {
+		vkutil::transition_image(cmd, m_vk.tracy_capture_image.image,
+		    m_vk.tracy_capture_image_layout,
+		    vk::ImageLayout::eTransferDstOptimal);
+		m_vk.tracy_capture_image_layout = vk::ImageLayout::eTransferDstOptimal;
+
+		vk::ImageBlit blit_region {};
+		blit_region.srcSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+		blit_region.srcSubresource.mipLevel = 0;
+		blit_region.srcSubresource.baseArrayLayer = 0;
+		blit_region.srcSubresource.layerCount = 1;
+		blit_region.srcOffsets[0] = vk::Offset3D { 0, 0, 0 };
+		blit_region.srcOffsets[1]
+		    = vk::Offset3D { static_cast<int32_t>(m_vk.swapchain_extent.width),
+			      static_cast<int32_t>(m_vk.swapchain_extent.height), 1 };
+		blit_region.dstSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+		blit_region.dstSubresource.mipLevel = 0;
+		blit_region.dstSubresource.baseArrayLayer = 0;
+		blit_region.dstSubresource.layerCount = 1;
+		blit_region.dstOffsets[0] = vk::Offset3D { 0, 0, 0 };
+		blit_region.dstOffsets[1] = vk::Offset3D {
+			static_cast<int32_t>(m_vk.tracy_capture_extent.width),
+			static_cast<int32_t>(m_vk.tracy_capture_extent.height), 1
+		};
+
+		cmd.blitImage(m_vk.swapchain_images.at(swapchain_image_idx),
+		    vk::ImageLayout::eTransferSrcOptimal,
+		    m_vk.tracy_capture_image.image,
+		    vk::ImageLayout::eTransferDstOptimal, blit_region,
+		    vk::Filter::eLinear);
+
+		vkutil::transition_image(cmd, m_vk.tracy_capture_image.image,
+		    m_vk.tracy_capture_image_layout,
+		    vk::ImageLayout::eTransferSrcOptimal);
+		m_vk.tracy_capture_image_layout = vk::ImageLayout::eTransferSrcOptimal;
+
+		vk::BufferImageCopy copy_region {};
+		copy_region.imageSubresource.aspectMask
+		    = vk::ImageAspectFlagBits::eColor;
+		copy_region.imageSubresource.mipLevel = 0;
+		copy_region.imageSubresource.baseArrayLayer = 0;
+		copy_region.imageSubresource.layerCount = 1;
+		copy_region.imageExtent
+		    = vk::Extent3D { m_vk.tracy_capture_extent.width,
+			      m_vk.tracy_capture_extent.height, 1 };
+
+		cmd.copyImageToBuffer(m_vk.tracy_capture_image.image,
+		    vk::ImageLayout::eTransferSrcOptimal,
+		    frame.frame_image_buffer.buffer, copy_region);
+		frame.frame_image_ready = true;
+		frame.tracy_frame_ready = true;
+	}
+#endif
+
+	vkutil::transition_image(cmd, m_vk.swapchain_images.at(swapchain_image_idx),
+	    vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR);
 
 	cmd.end();
 
@@ -1503,7 +1601,9 @@ auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void
 		    })
 		    .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR)
 		    .set_desired_extent(width, height)
-		    .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+		    .set_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+		        | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+		        | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
 		    .build() };
 	if (!swapchain_ret) {
 		std::println(std::cerr, "Failed to create swapchain. Error: {}",
@@ -1536,6 +1636,10 @@ auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void
 	for (auto &semaphore : m_vk.present_semaphores) {
 		semaphore = m_device.createSemaphoreUnique(semaphore_ci);
 	}
+	ensure_screenshot_buffers(m_vk.swapchain_extent);
+#if defined(TRACY_ENABLE)
+	ensure_tracy_frame_buffers(m_vk.swapchain_extent);
+#endif
 }
 
 auto VulkanRenderer::create_draw_image(uint32_t width, uint32_t height) -> void
@@ -1652,6 +1756,11 @@ auto VulkanRenderer::destroy_swapchain() -> void
 	if (!m_vk.swapchain)
 		return;
 
+	destroy_screenshot_buffers();
+#if defined(TRACY_ENABLE)
+	destroy_tracy_frame_buffers();
+#endif
+
 	m_vk.present_semaphores.clear();
 	m_device.destroySwapchainKHR(m_vk.swapchain);
 
@@ -1662,11 +1771,292 @@ auto VulkanRenderer::destroy_swapchain() -> void
 	m_vk.swapchain_extent = vk::Extent2D { 0, 0 };
 }
 
-auto VulkanRenderer::create_image(vk::Extent3D size, vk::Format format,
+auto VulkanRenderer::ensure_screenshot_buffers(vk::Extent2D extent) -> void
+{
+	if (extent.width == 0 || extent.height == 0) {
+		return;
+	}
+
+	auto const byte_count { static_cast<size_t>(extent.width)
+		* static_cast<size_t>(extent.height) * 4 };
+
+	for (auto &frame : m_vk.frames) {
+		auto const same_extent { frame.screenshot_buffer.buffer
+			&& frame.screenshot_extent.width == extent.width
+			&& frame.screenshot_extent.height == extent.height };
+		if (!same_extent && frame.screenshot_buffer.buffer) {
+			destroy_buffer(frame.screenshot_buffer);
+			frame.screenshot_buffer = AllocatedBuffer {};
+		}
+
+		if (!same_extent) {
+			frame.screenshot_buffer = create_buffer(byte_count,
+			    vk::BufferUsageFlagBits::eTransferDst,
+			    VMA_MEMORY_USAGE_GPU_TO_CPU);
+			frame.screenshot_extent = extent;
+			frame.screenshot_rgba.resize(byte_count);
+		}
+
+		frame.screenshot_ready = false;
+	}
+}
+
+auto VulkanRenderer::destroy_screenshot_buffers() -> void
+{
+	for (auto &frame : m_vk.frames) {
+		if (frame.screenshot_buffer.buffer) {
+			destroy_buffer(frame.screenshot_buffer);
+			frame.screenshot_buffer = AllocatedBuffer {};
+		}
+		frame.screenshot_extent = vk::Extent2D {};
+		frame.screenshot_rgba.clear();
+		frame.screenshot_ready = false;
+	}
+
+	m_latest_screenshot_pixels.clear();
+	m_latest_screenshot_extent = vk::Extent2D {};
+	if (m_latest_screenshot) {
+		destroy_image(*m_latest_screenshot);
+		m_latest_screenshot.reset();
+	}
+}
+
+auto VulkanRenderer::emit_frame_screenshot(FrameData &frame) -> void
+{
+	if (!frame.screenshot_ready) {
+		return;
+	}
+
+	auto const extent { frame.screenshot_extent };
+	if (extent.width == 0 || extent.height == 0) {
+		return;
+	}
+
+	auto const byte_count { static_cast<size_t>(extent.width)
+		* static_cast<size_t>(extent.height) * 4 };
+	if (!frame.screenshot_buffer.buffer) {
+		return;
+	}
+
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(
+	    m_vk.allocator, frame.screenshot_buffer.allocation, &info);
+
+	void *mapped { info.pMappedData };
+	bool mapped_here { false };
+	if (!mapped) {
+		auto const map_result { vmaMapMemory(
+			m_vk.allocator, frame.screenshot_buffer.allocation, &mapped) };
+		if (map_result != VK_SUCCESS) {
+			return;
+		}
+		mapped_here = true;
+	}
+
+	auto *source { static_cast<std::uint8_t *>(mapped) };
+	auto &destination { frame.screenshot_rgba };
+	if (destination.size() != byte_count) {
+		destination.resize(byte_count);
+	}
+
+	for (size_t i = 0; i < byte_count; i += 4) {
+		destination[i] = source[i + 2];
+		destination[i + 1] = source[i + 1];
+		destination[i + 2] = source[i];
+		destination[i + 3] = source[i + 3];
+	}
+
+	auto const screenshot_flags { vk::ImageUsageFlagBits::eSampled };
+	auto const screenshot_extent { vk::Extent3D {
+		extent.width, extent.height, 1 } };
+
+	if (m_latest_screenshot) {
+		destroy_image(*m_latest_screenshot);
+		m_latest_screenshot.reset();
+	}
+
+	m_latest_screenshot = create_image(destination.data(), screenshot_extent,
+	    vk::Format::eR8G8B8A8Unorm, screenshot_flags);
+	m_latest_screenshot_pixels = destination;
+	m_latest_screenshot_extent = extent;
+
+	if (mapped_here) {
+		vmaUnmapMemory(m_vk.allocator, frame.screenshot_buffer.allocation);
+	}
+
+	frame.screenshot_ready = false;
+}
+
+#if defined(TRACY_ENABLE)
+namespace {
+
+[[nodiscard]] auto tracy_capture_extent(vk::Extent2D extent) -> vk::Extent2D
+{
+	constexpr uint32_t max_width { 320 };
+	constexpr uint32_t max_height { 180 };
+
+	auto width { std::min(extent.width, max_width) };
+	auto height { std::min(extent.height, max_height) };
+
+	width -= width % 4;
+	height -= height % 4;
+
+	return vk::Extent2D { width, height };
+}
+
+} // namespace
+
+auto VulkanRenderer::ensure_tracy_frame_buffers(vk::Extent2D extent) -> void
+{
+	auto const capture_extent { tracy_capture_extent(extent) };
+	if (capture_extent.width == 0 || capture_extent.height == 0) {
+		return;
+	}
+
+	auto const byte_count { static_cast<size_t>(capture_extent.width)
+		* static_cast<size_t>(capture_extent.height) * 4 };
+
+	if (m_vk.tracy_capture_extent.width != capture_extent.width
+	    || m_vk.tracy_capture_extent.height != capture_extent.height) {
+		if (m_vk.tracy_capture_image.image) {
+			destroy_image(m_vk.tracy_capture_image);
+		}
+
+		auto const flags { vk::ImageUsageFlagBits::eTransferDst
+			| vk::ImageUsageFlagBits::eTransferSrc
+			| vk::ImageUsageFlagBits::eColorAttachment
+			| vk::ImageUsageFlagBits::eSampled };
+		auto const capture_size { vk::Extent3D {
+			capture_extent.width, capture_extent.height, 1 } };
+		m_vk.tracy_capture_image = create_image_no_view(
+		    capture_size, m_vk.swapchain_image_format, flags);
+		m_vk.tracy_capture_image_layout = vk::ImageLayout::eUndefined;
+		m_vk.tracy_capture_extent = capture_extent;
+	}
+
+	for (auto &frame : m_vk.frames) {
+		auto const same_extent { frame.frame_image_buffer.buffer
+			&& frame.frame_image_extent.width == capture_extent.width
+			&& frame.frame_image_extent.height == capture_extent.height };
+		if (!same_extent && frame.frame_image_buffer.buffer) {
+			destroy_buffer(frame.frame_image_buffer);
+			frame.frame_image_buffer = AllocatedBuffer {};
+		}
+
+		if (!same_extent) {
+			frame.frame_image_buffer = create_buffer(byte_count,
+			    vk::BufferUsageFlagBits::eTransferDst,
+			    VMA_MEMORY_USAGE_GPU_TO_CPU);
+			frame.frame_image_extent = capture_extent;
+			frame.frame_image_rgba.resize(byte_count);
+		}
+
+		frame.frame_image_ready = false;
+		frame.tracy_frame_ready = false;
+	}
+}
+
+auto VulkanRenderer::destroy_tracy_frame_buffers() -> void
+{
+	for (auto &frame : m_vk.frames) {
+		if (frame.frame_image_buffer.buffer) {
+			destroy_buffer(frame.frame_image_buffer);
+			frame.frame_image_buffer = AllocatedBuffer {};
+		}
+		frame.frame_image_extent = vk::Extent2D {};
+		frame.frame_image_rgba.clear();
+		frame.frame_image_ready = false;
+		frame.tracy_frame_ready = false;
+	}
+
+	if (m_vk.tracy_capture_image.image) {
+		destroy_image(m_vk.tracy_capture_image);
+		m_vk.tracy_capture_image = AllocatedImage {};
+	}
+	m_vk.tracy_capture_image_layout = vk::ImageLayout::eUndefined;
+	m_vk.tracy_capture_extent = vk::Extent2D {};
+}
+
+auto VulkanRenderer::emit_tracy_frame_image(FrameData &frame) -> void
+{
+	if (!frame.frame_image_ready) {
+		return;
+	}
+
+	auto const extent { frame.frame_image_extent };
+	if (extent.width == 0 || extent.height == 0) {
+		return;
+	}
+	if (extent.width % 4 != 0 || extent.height % 4 != 0) {
+		return;
+	}
+	if (extent.width > std::numeric_limits<std::uint16_t>::max()
+	    || extent.height > std::numeric_limits<std::uint16_t>::max()) {
+		return;
+	}
+
+	auto const byte_count { static_cast<size_t>(extent.width)
+		* static_cast<size_t>(extent.height) * 4 };
+	if (!frame.frame_image_buffer.buffer) {
+		return;
+	}
+
+	VmaAllocationInfo info {};
+	vmaGetAllocationInfo(
+	    m_vk.allocator, frame.frame_image_buffer.allocation, &info);
+
+	void *mapped { info.pMappedData };
+	bool mapped_here { false };
+	if (!mapped) {
+		auto const map_result { vmaMapMemory(
+			m_vk.allocator, frame.frame_image_buffer.allocation, &mapped) };
+		if (map_result != VK_SUCCESS) {
+			return;
+		}
+		mapped_here = true;
+	}
+
+	auto *source { static_cast<std::uint8_t *>(mapped) };
+	auto &destination { frame.frame_image_rgba };
+	if (destination.size() != byte_count) {
+		destination.resize(byte_count);
+	}
+
+	for (size_t i = 0; i < byte_count; i += 4) {
+		destination[i] = source[i + 2];
+		destination[i + 1] = source[i + 1];
+		destination[i + 2] = source[i];
+		destination[i + 3] = source[i + 3];
+	}
+
+	if (!frame.tracy_frame_ready || !TracyIsConnected) {
+		frame.frame_image_ready = false;
+		frame.tracy_frame_ready = false;
+		if (mapped_here) {
+			vmaUnmapMemory(m_vk.allocator, frame.frame_image_buffer.allocation);
+		}
+		return;
+	}
+
+	auto const frame_offset { static_cast<std::uint8_t>(
+		m_vk.frames.size() - 1) };
+	FrameImage(destination.data(), static_cast<std::uint16_t>(extent.width),
+	    static_cast<std::uint16_t>(extent.height), frame_offset, false);
+
+	if (mapped_here) {
+		vmaUnmapMemory(m_vk.allocator, frame.frame_image_buffer.allocation);
+	}
+
+	frame.frame_image_ready = false;
+	frame.tracy_frame_ready = false;
+}
+#endif
+
+auto VulkanRenderer::create_image_no_view(vk::Extent3D size, vk::Format format,
     vk::ImageUsageFlags flags, vk::SampleCountFlagBits samples, bool mipmapped)
     -> AllocatedImage
 {
-	AllocatedImage new_image;
+	AllocatedImage new_image {};
 	new_image.format = format;
 	new_image.extent = size;
 
@@ -1687,6 +2077,16 @@ auto VulkanRenderer::create_image(vk::Extent3D size, vk::Format format,
 	        reinterpret_cast<VkImageCreateInfo const *>(&img_ci), &alloc_ci,
 	        reinterpret_cast<VkImage *>(&new_image.image),
 	        &new_image.allocation, nullptr));
+
+	return new_image;
+}
+
+auto VulkanRenderer::create_image(vk::Extent3D size, vk::Format format,
+    vk::ImageUsageFlags flags, vk::SampleCountFlagBits samples, bool mipmapped)
+    -> AllocatedImage
+{
+	AllocatedImage new_image { create_image_no_view(
+		size, format, flags, samples, mipmapped) };
 
 	vk::ImageAspectFlags aspect_flag { vk::ImageAspectFlagBits::eColor };
 	if (format == vk::Format::eD32Sfloat) {

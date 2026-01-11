@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <variant>
 #include <vector>
 
@@ -30,14 +32,13 @@ struct GPUDrawPushConstants {
 constexpr unsigned FRAME_OVERLAP = 2;
 
 struct VulkanRenderer {
-	enum class AntiAliasingKind {
-		NONE,
-		MSAA_2X,
-		MSAA_4X,
-		MSAA_8X,
+	struct ScreenshotPixels {
+		std::span<std::uint8_t const> pixels;
+		vk::Extent2D extent;
 	};
 
 	struct GL {
+
 		enum class GeometryKind {
 			Triangles,
 			TriangleStrip,
@@ -116,6 +117,13 @@ struct VulkanRenderer {
 		std::vector<uint32_t> m_indices;
 	};
 
+	enum class AntiAliasingKind {
+		NONE,
+		MSAA_2X,
+		MSAA_4X,
+		MSAA_8X,
+	};
+
 	VulkanRenderer(SDL_Window *window, Logger &logger);
 	~VulkanRenderer();
 
@@ -160,10 +168,32 @@ struct VulkanRenderer {
 	auto mesh_pipeline() -> Pipeline & { return m_vk.mesh_pipeline; }
 	auto triangle_pipeline() -> Pipeline & { return m_vk.triangle_pipeline; }
 	auto gl_api() -> GL & { return gl; }
+	auto get_screenshot() const -> std::optional<AllocatedImage>
+	{
+		return m_latest_screenshot;
+	}
+	auto get_screenshot_pixels() const
+	    -> std::optional<VulkanRenderer::ScreenshotPixels>
+	{
+		if (m_latest_screenshot_pixels.empty()
+		    || m_latest_screenshot_extent.width == 0
+		    || m_latest_screenshot_extent.height == 0) {
+			return {};
+		}
+
+		auto const span { std::span<std::uint8_t const> {
+			m_latest_screenshot_pixels.data(),
+			m_latest_screenshot_pixels.size() } };
+		return ScreenshotPixels { span, m_latest_screenshot_extent };
+	}
 
 	auto logger() const -> Logger & { return m_logger; }
 
 	GL gl;
+
+	std::optional<AllocatedImage> m_latest_screenshot {};
+	std::vector<std::uint8_t> m_latest_screenshot_pixels {};
+	vk::Extent2D m_latest_screenshot_extent {};
 
 private:
 	struct RenderCommand {
@@ -197,7 +227,19 @@ private:
 	auto destroy_msaa_color_image() -> void;
 	auto recreate_swapchain(uint32_t width, uint32_t height) -> void;
 	auto destroy_swapchain() -> void;
+	auto ensure_screenshot_buffers(vk::Extent2D extent) -> void;
+	auto destroy_screenshot_buffers() -> void;
+	auto emit_frame_screenshot(FrameData &frame) -> void;
+#if defined(TRACY_ENABLE)
+	auto ensure_tracy_frame_buffers(vk::Extent2D extent) -> void;
+	auto destroy_tracy_frame_buffers() -> void;
+	auto emit_tracy_frame_image(FrameData &frame) -> void;
+#endif
 	auto create_image(vk::Extent3D size, vk::Format format,
+	    vk::ImageUsageFlags flags,
+	    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1,
+	    bool mipmapped = false) -> AllocatedImage;
+	auto create_image_no_view(vk::Extent3D size, vk::Format format,
 	    vk::ImageUsageFlags flags,
 	    vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1,
 	    bool mipmapped = false) -> AllocatedImage;
@@ -248,6 +290,13 @@ private:
 		vk::ImageLayout msaa_color_image_layout { vk::ImageLayout::eUndefined };
 		AllocatedImage depth_image {};
 		vk::ImageLayout depth_image_layout { vk::ImageLayout::eUndefined };
+#if defined(TRACY_ENABLE)
+		AllocatedImage tracy_capture_image {};
+		vk::ImageLayout tracy_capture_image_layout {
+			vk::ImageLayout::eUndefined
+		};
+		vk::Extent2D tracy_capture_extent {};
+#endif
 		vk::Extent2D draw_extent {};
 		AntiAliasingKind antialiasing_kind { AntiAliasingKind::NONE };
 		vk::SampleCountFlagBits msaa_samples { vk::SampleCountFlagBits::e1 };

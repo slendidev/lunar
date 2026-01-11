@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
+#include <vector>
 
 #include <smath.hpp>
 #include <vk_mem_alloc.h>
@@ -33,6 +35,15 @@ struct FrameData {
 
 	DeletionQueue deletion_queue;
 	DescriptorAllocatorGrowable frame_descriptors;
+	AllocatedBuffer frame_image_buffer {};
+	vk::Extent2D frame_image_extent {};
+	std::vector<std::uint8_t> frame_image_rgba;
+	bool frame_image_ready { false };
+	bool tracy_frame_ready { false };
+	AllocatedBuffer screenshot_buffer {};
+	vk::Extent2D screenshot_extent {};
+	std::vector<std::uint8_t> screenshot_rgba;
+	bool screenshot_ready { false };
 };
 
 struct Vertex {
