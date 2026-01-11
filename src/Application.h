@@ -24,9 +24,6 @@ namespace Lunar {
 struct VulkanRenderer;
 
 struct Application {
-	Application();
-	~Application();
-
 	auto run() -> void;
 	auto binary_directory() const -> std::filesystem::path;
 
@@ -41,6 +38,9 @@ struct Application {
 	static auto the() -> Application &;
 
 private:
+	Application();
+	~Application();
+
 	auto init_input() -> void;
 	auto init_test_meshes() -> void;
 	auto asset_directory() -> std::filesystem::path;
