@@ -15,6 +15,7 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.hpp>
 
+#include "CPUTexture.h"
 #include "Colors.h"
 #include "DeletionQueue.h"
 #include "Loader.h"
@@ -140,13 +141,12 @@ struct VulkanRenderer {
 	    bool clear_frame_descriptors = true) -> void;
 	auto upload_mesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
 	    -> GPUMeshBuffers;
+	auto destroy_buffer(AllocatedBuffer const &buffer) -> void;
+	auto create_image(CPUTexture const &texture, vk::ImageUsageFlags flags,
+	    bool mipmapped = false) -> AllocatedImage;
 	auto rectangle_mesh() const -> GPUMeshBuffers const &
 	{
 		return m_vk.rectangle;
-	}
-	auto test_meshes() const -> std::vector<std::shared_ptr<Mesh>> const &
-	{
-		return m_vk.test_meshes;
 	}
 	auto white_texture() const -> AllocatedImage const &
 	{
@@ -167,6 +167,23 @@ struct VulkanRenderer {
 	auto draw_extent() const -> vk::Extent2D { return m_vk.draw_extent; }
 	auto mesh_pipeline() -> Pipeline & { return m_vk.mesh_pipeline; }
 	auto triangle_pipeline() -> Pipeline & { return m_vk.triangle_pipeline; }
+	auto device() const -> vk::Device { return m_device; }
+	auto draw_image_format() const -> vk::Format
+	{
+		return m_vk.draw_image.format;
+	}
+	auto depth_image_format() const -> vk::Format
+	{
+		return m_vk.depth_image.format;
+	}
+	auto msaa_samples() const -> vk::SampleCountFlagBits
+	{
+		return m_vk.msaa_samples;
+	}
+	auto single_image_descriptor_layout() const -> vk::DescriptorSetLayout
+	{
+		return m_vk.single_image_descriptor_layout;
+	}
 	auto gl_api() -> GL & { return gl; }
 	auto get_screenshot() const -> std::optional<AllocatedImage>
 	{
@@ -249,7 +266,6 @@ private:
 
 	auto create_buffer(size_t alloc_size, vk::BufferUsageFlags usage,
 	    VmaMemoryUsage memory_usage) -> AllocatedBuffer;
-	auto destroy_buffer(AllocatedBuffer const &buffer) -> void;
 	auto enqueue_render_command(RenderCommand &&command) -> void;
 	auto process_render_commands() -> void;
 	auto apply_antialiasing(AntiAliasingKind kind) -> void;
@@ -325,8 +341,6 @@ private:
 		vk::UniqueCommandPool imm_command_pool;
 
 		uint64_t frame_number { 0 };
-
-		std::vector<std::shared_ptr<Mesh>> test_meshes;
 
 		AllocatedImage white_image {};
 		AllocatedImage black_image {};

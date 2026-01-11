@@ -2,13 +2,16 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
 #include <linux/input-event-codes.h>
 
+#include "Loader.h"
 #include "Logger.h"
+#include "Pipeline.h"
 #include "Types.h"
 
 struct libinput;
@@ -25,6 +28,7 @@ struct Application {
 	~Application();
 
 	auto run() -> void;
+	auto binary_directory() const -> std::filesystem::path;
 
 	auto mouse_captured(bool new_state) -> void;
 	auto mouse_captured() const -> bool { return m_mouse_captured; }
@@ -33,6 +37,9 @@ struct Application {
 
 private:
 	auto init_input() -> void;
+	auto init_skybox_pipeline() -> void;
+	auto init_test_meshes() -> void;
+	auto asset_directory() -> std::filesystem::path;
 	auto shutdown_input() -> void;
 	auto process_libinput_events() -> void;
 	auto handle_keyboard_event(libinput_event_keyboard *event) -> void;
@@ -41,6 +48,8 @@ private:
 	SDL_Window *m_window { nullptr };
 	Logger m_logger { "Lunar" };
 	std::unique_ptr<VulkanRenderer> m_renderer;
+	Pipeline m_skybox_pipeline;
+	std::vector<std::shared_ptr<Mesh>> m_test_meshes;
 
 	udev *m_udev { nullptr };
 	libinput *m_libinput { nullptr };

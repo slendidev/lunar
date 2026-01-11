@@ -19,6 +19,8 @@ shader_sources = files(
 	'triangle_mesh.frag',
 	'triangle_mesh.vert',
 	'tex_image.frag',
+	'skybox.frag',
+	'skybox.vert',
 )
 
 spirv_shaders = []

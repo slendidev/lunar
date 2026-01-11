@@ -1302,15 +1302,7 @@ auto VulkanRenderer::default_data_init() -> void
 
 	m_vk.rectangle = upload_mesh(rect_indices, rect_vertices);
 
-	m_vk.test_meshes
-	    = Mesh::load_gltf_meshes(*this, "assets/basicmesh.glb").value();
-
 	m_vk.deletion_queue.emplace([&]() {
-		for (auto &mesh : m_vk.test_meshes) {
-			destroy_buffer(mesh->mesh_buffers.index_buffer);
-			destroy_buffer(mesh->mesh_buffers.vertex_buffer);
-		}
-
 		destroy_buffer(m_vk.rectangle.index_buffer);
 		destroy_buffer(m_vk.rectangle.vertex_buffer);
 	});
@@ -2160,6 +2152,14 @@ auto VulkanRenderer::create_image(void const *data, vk::Extent3D size,
 	destroy_buffer(upload_buffer);
 
 	return new_image;
+}
+
+auto VulkanRenderer::create_image(CPUTexture const &texture,
+    vk::ImageUsageFlags flags, bool mipmapped) -> AllocatedImage
+{
+	vk::Extent3D size { texture.width, texture.height, 1 };
+	return create_image(
+	    texture.pixels.data(), size, texture.format, flags, mipmapped);
 }
 
 auto VulkanRenderer::destroy_image(AllocatedImage const &img) -> void

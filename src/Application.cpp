@@ -5,13 +5,17 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fcntl.h>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <numbers>
 #include <optional>
 #include <print>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <unistd.h>
 
 #if defined(__clang__)
@@ -32,6 +36,7 @@
 #endif
 
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_init.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_timer.h>
@@ -46,6 +51,7 @@
 
 #include <smath.hpp>
 
+#include "GraphicsPipelineBuilder.h"
 #include "Util.h"
 #include "VulkanRenderer.h"
 
@@ -413,6 +419,8 @@ Application::Application()
 	}
 
 	m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
+	init_skybox_pipeline();
+	init_test_meshes();
 
 	init_input();
 
@@ -427,6 +435,15 @@ Application::Application()
 
 Application::~Application()
 {
+	if (m_renderer) {
+		for (auto const &mesh : m_test_meshes) {
+			m_renderer->destroy_buffer(mesh->mesh_buffers.index_buffer);
+			m_renderer->destroy_buffer(mesh->mesh_buffers.vertex_buffer);
+		}
+	}
+	m_test_meshes.clear();
+
+	m_skybox_pipeline.reset();
 	m_renderer.reset();
 
 	shutdown_input();
@@ -437,7 +454,143 @@ Application::~Application()
 	m_logger.info("App destroy done!");
 }
 
+auto Application::init_skybox_pipeline() -> void
+{
+	struct SkyboxPushConstants {
+		smath::Mat4 mvp;
+	};
+
+	Pipeline::Builder builder { m_renderer->device(), m_logger };
+
+	uint8_t skybox_vert_shader_data[] {
+#embed "skybox_vert.spv"
+	};
+	auto skybox_vert_shader
+	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_vert_shader_data,
+	                                     sizeof(skybox_vert_shader_data)),
+	        m_renderer->device());
+	if (!skybox_vert_shader) {
+		m_logger.err("Failed to load skybox vert shader");
+	}
+
+	uint8_t skybox_frag_shader_data[] {
+#embed "skybox_frag.spv"
+	};
+	auto skybox_frag_shader
+	    = vkutil::load_shader_module(std::span<uint8_t>(skybox_frag_shader_data,
+	                                     sizeof(skybox_frag_shader_data)),
+	        m_renderer->device());
+	if (!skybox_frag_shader) {
+		m_logger.err("Failed to load skybox frag shader");
+	}
+
+	vk::PushConstantRange push_constant_range {};
+	push_constant_range.stageFlags = vk::ShaderStageFlagBits::eVertex;
+	push_constant_range.offset = 0;
+	push_constant_range.size = sizeof(SkyboxPushConstants);
+
+	std::array push_constant_ranges { push_constant_range };
+	builder.set_push_constant_ranges(push_constant_ranges);
+	std::array descriptor_set_layouts {
+		m_renderer->single_image_descriptor_layout(),
+	};
+	builder.set_descriptor_set_layouts(descriptor_set_layouts);
+
+	m_skybox_pipeline = builder.build_graphics(
+	    [&](GraphicsPipelineBuilder &pipeline_builder)
+	        -> GraphicsPipelineBuilder & {
+		    return pipeline_builder
+		        .set_shaders(skybox_vert_shader.get(), skybox_frag_shader.get())
+		        .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		        .set_polygon_mode(VK_POLYGON_MODE_FILL)
+		        .set_cull_mode(
+		            VK_CULL_MODE_FRONT_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE)
+		        .set_multisampling(static_cast<VkSampleCountFlagBits>(
+		            m_renderer->msaa_samples()))
+		        .disable_blending()
+		        .enable_depth_testing(false, VK_COMPARE_OP_LESS_OR_EQUAL)
+		        .set_color_attachment_format(
+		            static_cast<VkFormat>(m_renderer->draw_image_format()))
+		        .set_depth_format(
+		            static_cast<VkFormat>(m_renderer->depth_image_format()));
+	    });
+}
+
+auto Application::binary_directory() const -> std::filesystem::path
+{
+	auto const *base_path = SDL_GetBasePath();
+	if (!base_path) {
+		return std::filesystem::current_path();
+	}
+	std::filesystem::path base_dir { base_path };
+	SDL_free(const_cast<char *>(base_path));
+	return base_dir;
+}
+
+auto Application::asset_directory() -> std::filesystem::path
+{
+	std::vector<std::filesystem::path> candidates;
+
+	auto add_xdg_path = [&](std::filesystem::path const &base) {
+		candidates.emplace_back(base / "lunar" / "assets");
+	};
+
+	if (auto const *xdg_data_home = getenv("XDG_DATA_HOME");
+	    xdg_data_home && *xdg_data_home) {
+		add_xdg_path(xdg_data_home);
+	}
+
+	if (auto const *xdg_data_dirs = getenv("XDG_DATA_DIRS");
+	    xdg_data_dirs && *xdg_data_dirs) {
+		std::string_view dirs_view { xdg_data_dirs };
+		size_t start = 0;
+		while (start <= dirs_view.size()) {
+			size_t end = dirs_view.find(':', start);
+			if (end == std::string_view::npos) {
+				end = dirs_view.size();
+			}
+			auto segment = dirs_view.substr(start, end - start);
+			if (!segment.empty()) {
+				add_xdg_path(std::filesystem::path { segment });
+			}
+			start = end + 1;
+		}
+	} else {
+		add_xdg_path("/usr/local/share");
+		add_xdg_path("/usr/share");
+	}
+
+	auto base_dir = binary_directory();
+	candidates.emplace_back(base_dir / "assets");
+	candidates.emplace_back(base_dir / "../assets");
+
+	for (auto const &candidate : candidates) {
+		if (std::filesystem::exists(candidate)
+		    && std::filesystem::is_directory(candidate)) {
+			return candidate;
+		}
+	}
+
+	m_logger.warn(
+	    "Assets directory not found, using {}", (base_dir / "assets").string());
+	return base_dir / "assets";
+}
+
+auto Application::init_test_meshes() -> void
+{
+	auto assets_dir = asset_directory();
+	auto mesh_path = assets_dir / "basicmesh.glb";
+	auto meshes = Mesh::load_gltf_meshes(*m_renderer, mesh_path);
+	if (!meshes) {
+		m_logger.err("Failed to load test mesh: {}", mesh_path.string());
+		return;
+	}
+
+	m_test_meshes = std::move(*meshes);
+}
+
 auto Application::run() -> void
+
 {
 	SDL_Event e;
 
@@ -500,9 +653,6 @@ auto Application::run() -> void
 			auto const target_distance { target_offset.magnitude() };
 			auto const target_polar { PolarCoordinate::from_vec3(
 				target_offset) };
-			// Keep cursor angles in sync with externally-updated targets so
-			// view aligns to the target direction. Preserve radius when the
-			// target sits on top of the camera to avoid collapsing it.
 			if (target_distance > 0.0f) {
 				m_cursor.r = target_distance;
 				m_cursor.theta = target_polar.theta;
@@ -711,7 +861,7 @@ auto Application::run() -> void
 			gl.set_transform(view_projection);
 
 			gl.set_texture();
-			auto const &meshes { m_renderer->test_meshes() };
+			auto const &meshes { m_test_meshes };
 			if (meshes.size() > 2 && !meshes[2]->surfaces.empty()) {
 				auto const &surface = meshes[2]->surfaces[0];
 				gl.draw_mesh(meshes[2]->mesh_buffers,
