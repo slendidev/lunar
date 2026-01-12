@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -130,7 +131,10 @@ struct VulkanRenderer {
 		MSAA_8X,
 	};
 
+	struct KmsSurfaceConfig { };
+
 	VulkanRenderer(SDL_Window *window, Logger &logger);
+	VulkanRenderer(KmsSurfaceConfig config, Logger &logger);
 	~VulkanRenderer();
 
 	auto render(std::function<void(GL &)> const &record = {}) -> void;
@@ -232,6 +236,7 @@ private:
 
 	auto vk_init() -> void;
 	auto swapchain_init() -> void;
+	auto setup_kms_surface() -> void;
 	auto commands_init() -> void;
 	auto sync_init() -> void;
 	auto descriptors_init() -> void;
@@ -359,10 +364,25 @@ private:
 		vk::UniqueSampler default_sampler_nearest;
 	} m_vk;
 
+	struct KmsState {
+		vk::DisplayKHR display {};
+		vk::DisplayModeKHR mode {};
+		vk::Extent2D extent {};
+		uint32_t plane_index { 0 };
+		uint32_t plane_stack_index { 0 };
+		std::string display_name {};
+	};
+
 	SDL_Window *m_window { nullptr };
 	Logger &m_logger;
 	std::mutex m_command_mutex;
 	std::vector<RenderCommand> m_pending_render_commands;
+	bool m_use_kms { false };
+	bool m_imgui_enabled { true };
+	std::optional<KmsState> m_kms_state {};
+	vk::PhysicalDevice m_kms_physical_device {};
+	vk::Extent2D m_kms_extent {};
+	bool m_kms_physical_device_set { false };
 };
 
 } // namespace Lunar

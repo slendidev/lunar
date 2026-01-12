@@ -620,6 +620,9 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
 		throw std::runtime_error("VulkanRenderer requires a valid window");
 	}
 
+	m_use_kms = false;
+	m_imgui_enabled = true;
+
 	vk_init();
 	swapchain_init();
 	commands_init();
@@ -628,6 +631,22 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
 	pipelines_init();
 	default_data_init();
 	imgui_init();
+}
+
+VulkanRenderer::VulkanRenderer(KmsSurfaceConfig /*config*/, Logger &logger)
+    : gl(*this)
+    , m_logger(logger)
+{
+	m_use_kms = true;
+	m_imgui_enabled = false;
+
+	vk_init();
+	swapchain_init();
+	commands_init();
+	sync_init();
+	descriptors_init();
+	pipelines_init();
+	default_data_init();
 }
 
 VulkanRenderer::~VulkanRenderer()
@@ -671,8 +690,12 @@ VulkanRenderer::~VulkanRenderer()
 	}
 
 	if (m_vk.surface) {
-		SDL_Vulkan_DestroySurface(
-		    m_vkb.instance, static_cast<VkSurfaceKHR>(m_vk.surface), nullptr);
+		if (m_use_kms) {
+			m_instance.destroySurfaceKHR(m_vk.surface);
+		} else {
+			SDL_Vulkan_DestroySurface(m_vkb.instance,
+			    static_cast<VkSurfaceKHR>(m_vk.surface), nullptr);
+		}
 		m_vk.surface = nullptr;
 	}
 
@@ -847,6 +870,107 @@ auto VulkanRenderer::immediate_submit(
 	}
 }
 
+auto VulkanRenderer::setup_kms_surface() -> void
+{
+	auto const devices = m_instance.enumeratePhysicalDevices();
+	if (devices.empty()) {
+		m_logger.err("No Vulkan physical devices available for KMS");
+		throw std::runtime_error("App init fail");
+	}
+
+	for (auto const &device : devices) {
+		auto const displays = device.getDisplayPropertiesKHR();
+		if (displays.empty()) {
+			continue;
+		}
+
+		for (auto const &display_props : displays) {
+			auto const modes
+			    = device.getDisplayModePropertiesKHR(display_props.display);
+			if (modes.empty()) {
+				continue;
+			}
+
+			auto const best_mode_it = std::max_element(modes.begin(),
+			    modes.end(), [](auto const &lhs, auto const &rhs) {
+				    auto const lhs_extent = lhs.parameters.visibleRegion;
+				    auto const rhs_extent = rhs.parameters.visibleRegion;
+				    auto const lhs_area
+				        = static_cast<uint64_t>(lhs_extent.width)
+				        * static_cast<uint64_t>(lhs_extent.height);
+				    auto const rhs_area
+				        = static_cast<uint64_t>(rhs_extent.width)
+				        * static_cast<uint64_t>(rhs_extent.height);
+				    if (lhs_area == rhs_area) {
+					    return lhs.parameters.refreshRate
+					        < rhs.parameters.refreshRate;
+				    }
+				    return lhs_area < rhs_area;
+			    });
+
+			auto const planes = device.getDisplayPlanePropertiesKHR();
+			std::optional<uint32_t> plane_index;
+			uint32_t plane_stack_index { 0 };
+			for (uint32_t i = 0; i < planes.size(); ++i) {
+				auto const supported_displays
+				    = device.getDisplayPlaneSupportedDisplaysKHR(i);
+				if (std::find(supported_displays.begin(),
+				        supported_displays.end(), display_props.display)
+				    != supported_displays.end()) {
+					plane_index = i;
+					plane_stack_index = planes[i].currentStackIndex;
+					break;
+				}
+			}
+			if (!plane_index) {
+				continue;
+			}
+
+			auto const extent = best_mode_it->parameters.visibleRegion;
+			KmsState state {};
+			state.display = display_props.display;
+			state.mode = best_mode_it->displayMode;
+			state.extent = extent;
+			state.plane_index = *plane_index;
+			state.plane_stack_index = plane_stack_index;
+			if (display_props.displayName) {
+				state.display_name = display_props.displayName;
+			}
+
+			m_kms_state = state;
+			m_kms_extent = extent;
+			m_kms_physical_device = device;
+			m_kms_physical_device_set = true;
+
+			m_logger.info("Using KMS display {} ({}x{} @ {} mHz)",
+			    state.display_name.empty() ? "unnamed" : state.display_name,
+			    extent.width, extent.height,
+			    best_mode_it->parameters.refreshRate);
+			break;
+		}
+
+		if (m_kms_state) {
+			break;
+		}
+	}
+
+	if (!m_kms_state) {
+		m_logger.err("No suitable KMS display found");
+		throw std::runtime_error("App init fail");
+	}
+
+	vk::DisplaySurfaceCreateInfoKHR surface_info {};
+	surface_info.displayMode = m_kms_state->mode;
+	surface_info.planeIndex = m_kms_state->plane_index;
+	surface_info.planeStackIndex = m_kms_state->plane_stack_index;
+	surface_info.transform = vk::SurfaceTransformFlagBitsKHR::eIdentity;
+	surface_info.alphaMode = vk::DisplayPlaneAlphaFlagBitsKHR::eOpaque;
+	surface_info.globalAlpha = 1.0f;
+	surface_info.imageExtent = m_kms_state->extent;
+
+	m_vk.surface = m_instance.createDisplayPlaneSurfaceKHR(surface_info);
+}
+
 auto VulkanRenderer::vk_init() -> void
 {
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
@@ -884,6 +1008,9 @@ auto VulkanRenderer::vk_init() -> void
 
 		        return VK_FALSE;
 	        });
+	if (m_use_kms) {
+		instance_builder.enable_extension(VK_KHR_DISPLAY_EXTENSION_NAME);
+	}
 #ifndef NDEBUG
 	instance_builder.request_validation_layers();
 #endif
@@ -898,13 +1025,17 @@ auto VulkanRenderer::vk_init() -> void
 	m_instance = vk::Instance { m_vkb.instance.instance };
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(m_instance);
 
-	VkSurfaceKHR raw_surface {};
-	if (!SDL_Vulkan_CreateSurface(
-	        m_window, m_vkb.instance, nullptr, &raw_surface)) {
-		m_logger.err("Failed to create vulkan surface");
-		throw std::runtime_error("App init fail");
+	if (m_use_kms) {
+		setup_kms_surface();
+	} else {
+		VkSurfaceKHR raw_surface {};
+		if (!SDL_Vulkan_CreateSurface(
+		        m_window, m_vkb.instance, nullptr, &raw_surface)) {
+			m_logger.err("Failed to create vulkan surface");
+			throw std::runtime_error("App init fail");
+		}
+		m_vk.surface = vk::SurfaceKHR { raw_surface };
 	}
-	m_vk.surface = vk::SurfaceKHR { raw_surface };
 
 	vkb::PhysicalDeviceSelector phys_device_selector { m_vkb.instance };
 	VkPhysicalDeviceVulkan13Features features_13 {};
@@ -946,6 +1077,10 @@ auto VulkanRenderer::vk_init() -> void
 
 	m_logger.info("Chosen Vulkan physical device: {}",
 	    m_vkb.phys_dev.properties.deviceName);
+	if (m_use_kms && m_kms_physical_device_set
+	    && m_physical_device != m_kms_physical_device) {
+		m_logger.warn("KMS display is not on the selected physical device");
+	}
 
 	auto const props = m_physical_device.getProperties();
 	m_vk.supported_framebuffer_samples
@@ -974,6 +1109,13 @@ auto VulkanRenderer::vk_init() -> void
 	}
 	m_vk.graphics_queue_family = queue_family_ret.value();
 	m_vk.graphics_queue = m_device.getQueue(m_vk.graphics_queue_family, 0);
+	if (m_use_kms) {
+		if (!m_physical_device.getSurfaceSupportKHR(
+		        m_vk.graphics_queue_family, m_vk.surface)) {
+			m_logger.err("Selected device does not support KMS surface");
+			throw std::runtime_error("App init fail");
+		}
+	}
 
 	VmaAllocatorCreateInfo allocator_ci {};
 	allocator_ci.physicalDevice = m_vkb.phys_dev.physical_device;
@@ -985,12 +1127,21 @@ auto VulkanRenderer::vk_init() -> void
 
 auto VulkanRenderer::swapchain_init() -> void
 {
-	int w, h;
-	SDL_GetWindowSize(m_window, &w, &h);
-	create_swapchain(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-	create_draw_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-	create_msaa_color_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-	create_depth_image(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+	uint32_t width { 0 };
+	uint32_t height { 0 };
+	if (m_use_kms) {
+		width = m_kms_extent.width;
+		height = m_kms_extent.height;
+	} else {
+		int w {}, h {};
+		SDL_GetWindowSize(m_window, &w, &h);
+		width = static_cast<uint32_t>(w);
+		height = static_cast<uint32_t>(h);
+	}
+	create_swapchain(width, height);
+	create_draw_image(width, height);
+	create_msaa_color_image(width, height);
+	create_depth_image(width, height);
 }
 
 auto VulkanRenderer::commands_init() -> void
@@ -1404,10 +1555,14 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    m_vk.swapchain, 1'000'000'000, frame.swapchain_semaphore.get(), {});
 	if (acquire_result.result == vk::Result::eErrorOutOfDateKHR
 	    || acquire_result.result == vk::Result::eSuboptimalKHR) {
-		int width {}, height {};
-		SDL_GetWindowSize(m_window, &width, &height);
-		recreate_swapchain(
-		    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+		if (m_use_kms) {
+			recreate_swapchain(m_kms_extent.width, m_kms_extent.height);
+		} else {
+			int width {}, height {};
+			SDL_GetWindowSize(m_window, &width, &height);
+			recreate_swapchain(
+			    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+		}
 		return;
 	}
 	VK_CHECK(m_logger, acquire_result.result);
@@ -1463,7 +1618,10 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    vk::ImageLayout::eTransferDstOptimal,
 	    vk::ImageLayout::eColorAttachmentOptimal);
 
-	draw_imgui(cmd, m_vk.swapchain_image_views.at(swapchain_image_idx).get());
+	if (m_imgui_enabled) {
+		draw_imgui(
+		    cmd, m_vk.swapchain_image_views.at(swapchain_image_idx).get());
+	}
 
 	vkutil::transition_image(cmd, m_vk.swapchain_images.at(swapchain_image_idx),
 	    vk::ImageLayout::eColorAttachmentOptimal,
@@ -1577,10 +1735,14 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	auto const present_result = m_vk.graphics_queue.presentKHR(present_info);
 	if (present_result == vk::Result::eErrorOutOfDateKHR
 	    || present_result == vk::Result::eSuboptimalKHR) {
-		int width {}, height {};
-		SDL_GetWindowSize(m_window, &width, &height);
-		recreate_swapchain(
-		    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+		if (m_use_kms) {
+			recreate_swapchain(m_kms_extent.width, m_kms_extent.height);
+		} else {
+			int width {}, height {};
+			SDL_GetWindowSize(m_window, &width, &height);
+			recreate_swapchain(
+			    static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+		}
 		return;
 	}
 	VK_CHECK(m_logger, present_result);

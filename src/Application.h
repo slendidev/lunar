@@ -38,6 +38,11 @@ struct Application {
 	static auto the() -> Application &;
 
 private:
+	enum class Backend {
+		SDL,
+		KMS,
+	};
+
 	Application();
 	~Application();
 
@@ -50,6 +55,7 @@ private:
 	auto clamp_mouse_to_window(int width, int height) -> void;
 
 	SDL_Window *m_window { nullptr };
+	Backend m_backend { Backend::SDL };
 	Logger m_logger { "Lunar" };
 	std::unique_ptr<VulkanRenderer> m_renderer;
 	Skybox m_skybox;

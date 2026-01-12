@@ -405,22 +405,35 @@ namespace Lunar {
 
 Application::Application()
 {
-	if (!SDL_Init(SDL_INIT_VIDEO)) {
-		std::println(std::cerr, "Failed to initialize SDL.");
-		throw std::runtime_error("App init fail");
+	auto const *display_env = getenv("DISPLAY");
+	auto const *wayland_env = getenv("WAYLAND_DISPLAY");
+	bool const has_display
+	    = (display_env && *display_env) || (wayland_env && *wayland_env);
+	m_backend = has_display ? Backend::SDL : Backend::KMS;
+
+	if (m_backend == Backend::SDL) {
+		if (!SDL_Init(SDL_INIT_VIDEO)) {
+			std::println(std::cerr, "Failed to initialize SDL.");
+			throw std::runtime_error("App init fail");
+		}
+
+		m_window = SDL_CreateWindow(
+		    "Lunar", 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+		if (!m_window) {
+			m_logger.err("Failed to create SDL window");
+			throw std::runtime_error("App init fail");
+		}
+
+		m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
+
+		m_window_focused
+		    = (SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+	} else {
+		m_logger.info("No display server detected; using KMS backend");
+		m_renderer = std::make_unique<VulkanRenderer>(
+		    VulkanRenderer::KmsSurfaceConfig {}, m_logger);
+		m_window_focused = true;
 	}
-
-	m_window = SDL_CreateWindow(
-	    "Lunar", 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
-	if (!m_window) {
-		m_logger.err("Failed to create SDL window");
-		throw std::runtime_error("App init fail");
-	}
-
-	m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
-
-	m_window_focused
-	    = (SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 	m_renderer->set_antialiasing_immediate(
 	    VulkanRenderer::AntiAliasingKind::MSAA_4X);
 
@@ -429,7 +442,8 @@ Application::Application()
 
 	init_input();
 
-	mouse_captured(true);
+	if (m_backend == Backend::SDL)
+		mouse_captured(true);
 
 	m_logger.info("App init done!");
 
@@ -452,14 +466,20 @@ Application::~Application()
 
 	shutdown_input();
 
-	SDL_DestroyWindow(m_window);
-	SDL_Quit();
+	if (m_backend == Backend::SDL) {
+		SDL_DestroyWindow(m_window);
+		SDL_Quit();
+	}
 
 	m_logger.info("App destroy done!");
 }
 
 auto Application::binary_directory() const -> std::filesystem::path
 {
+	if (m_backend != Backend::SDL) {
+		return std::filesystem::current_path();
+	}
+
 	auto const *base_path = SDL_GetBasePath();
 	if (!base_path) {
 		return std::filesystem::current_path();
@@ -533,15 +553,28 @@ auto Application::run() -> void
 
 {
 	SDL_Event e;
+	bool const use_sdl = (m_backend == Backend::SDL);
+	bool const use_imgui = use_sdl;
 
-	ImGuiIO &io = ImGui::GetIO();
-	io.IniFilename = nullptr;
+	if (use_imgui) {
+		ImGuiIO &io = ImGui::GetIO();
+		io.IniFilename = nullptr;
+	}
 
 	uint64_t last { 0 };
 	float fps { 0.0f };
 	while (m_running) {
 		GZoneScopedN("Frame");
-		uint64_t now { SDL_GetTicks() };
+		uint64_t now { 0 };
+		if (use_sdl) {
+			now = SDL_GetTicks();
+		} else {
+			auto const now_tp = std::chrono::steady_clock::now();
+			now = static_cast<uint64_t>(
+			    std::chrono::duration_cast<std::chrono::milliseconds>(
+			        now_tp.time_since_epoch())
+			        .count());
+		}
 		uint64_t dt { now - last };
 		float dt_seconds { static_cast<float>(dt) / 1000.0f };
 		last = now;
@@ -554,48 +587,50 @@ auto Application::run() -> void
 			m_key_state_previous = m_key_state;
 			process_libinput_events();
 
-			while (SDL_PollEvent(&e)) {
-				bool forward_to_imgui { false };
-				if (e.type == SDL_EVENT_QUIT) {
-					m_running = false;
-				} else if (e.type == SDL_EVENT_WINDOW_RESIZED) {
-					int width {}, height {};
-					SDL_GetWindowSize(m_window, &width, &height);
-					m_renderer->resize(static_cast<uint32_t>(width),
-					    static_cast<uint32_t>(height));
-					clamp_mouse_to_window(width, height);
-					forward_to_imgui = true;
-				} else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
-					m_window_focused = true;
-					forward_to_imgui = true;
-				} else if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-					m_window_focused = false;
-					m_ctrl_pressed_count = 0;
-					m_key_state.fill(false);
-					m_key_state_previous.fill(false);
-					m_mouse_dx = 0.0;
+			if (use_sdl) {
+				while (SDL_PollEvent(&e)) {
+					bool forward_to_imgui { false };
+					if (e.type == SDL_EVENT_QUIT) {
+						m_running = false;
+					} else if (e.type == SDL_EVENT_WINDOW_RESIZED) {
+						int width {}, height {};
+						SDL_GetWindowSize(m_window, &width, &height);
+						m_renderer->resize(static_cast<uint32_t>(width),
+						    static_cast<uint32_t>(height));
+						clamp_mouse_to_window(width, height);
+						forward_to_imgui = true;
+					} else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+						m_window_focused = true;
+						forward_to_imgui = true;
+					} else if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+						m_window_focused = false;
+						m_ctrl_pressed_count = 0;
+						m_key_state.fill(false);
+						m_key_state_previous.fill(false);
+						m_mouse_dx = 0.0;
 
-					m_mouse_dy = 0.0;
-					forward_to_imgui = true;
-				} else if (e.type == SDL_EVENT_MOUSE_MOTION) {
-					m_mouse_x = e.motion.x;
-					m_mouse_y = e.motion.y;
-					m_mouse_dx = e.motion.xrel;
-					m_mouse_dy = e.motion.yrel;
-					forward_to_imgui = true;
-				} else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
-				    || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-					m_mouse_x = e.button.x;
-					m_mouse_y = e.button.y;
-					forward_to_imgui = true;
-				} else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-					m_mouse_x = e.wheel.mouse_x;
-					m_mouse_y = e.wheel.mouse_y;
-					forward_to_imgui = true;
+						m_mouse_dy = 0.0;
+						forward_to_imgui = true;
+					} else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+						m_mouse_x = e.motion.x;
+						m_mouse_y = e.motion.y;
+						m_mouse_dx = e.motion.xrel;
+						m_mouse_dy = e.motion.yrel;
+						forward_to_imgui = true;
+					} else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+					    || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+						m_mouse_x = e.button.x;
+						m_mouse_y = e.button.y;
+						forward_to_imgui = true;
+					} else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+						m_mouse_x = e.wheel.mouse_x;
+						m_mouse_y = e.wheel.mouse_y;
+						forward_to_imgui = true;
+					}
+
+					if (forward_to_imgui && use_imgui)
+						ImGui_ImplSDL3_ProcessEvent(&e);
 				}
-
-				if (forward_to_imgui)
-					ImGui_ImplSDL3_ProcessEvent(&e);
 			}
 		}
 
@@ -687,7 +722,7 @@ auto Application::run() -> void
 			m_mouse_dy = 0.0;
 		}
 
-		{
+		if (use_imgui) {
 			GZoneScopedN("ImGui");
 			ImGui_ImplSDL3_NewFrame();
 			ImGui_ImplVulkan_NewFrame();
@@ -909,14 +944,19 @@ auto Application::init_input() -> void
 		throw std::runtime_error("App init fail");
 	}
 
-	int width {}, height {};
-	SDL_GetWindowSize(m_window, &width, &height);
-	float mouse_x {}, mouse_y {};
-	SDL_GetMouseState(&mouse_x, &mouse_y);
-	m_mouse_x = mouse_x;
-	m_mouse_y = mouse_y;
-	ImGui::GetIO().AddMousePosEvent(
-	    static_cast<float>(m_mouse_x), static_cast<float>(m_mouse_y));
+	if (m_backend == Backend::SDL) {
+		int width {}, height {};
+		SDL_GetWindowSize(m_window, &width, &height);
+		float mouse_x {}, mouse_y {};
+		SDL_GetMouseState(&mouse_x, &mouse_y);
+		m_mouse_x = mouse_x;
+		m_mouse_y = mouse_y;
+		ImGui::GetIO().AddMousePosEvent(
+		    static_cast<float>(m_mouse_x), static_cast<float>(m_mouse_y));
+	} else {
+		m_mouse_x = 0.0;
+		m_mouse_y = 0.0;
+	}
 }
 
 auto Application::shutdown_input() -> void
@@ -973,7 +1013,8 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 		}
 	}
 
-	if (pressed && key == KEY_F11 && m_ctrl_pressed_count > 0) {
+	if (m_backend == Backend::SDL && pressed && key == KEY_F11
+	    && m_ctrl_pressed_count > 0) {
 		bool const new_show_imgui { !m_show_imgui };
 		m_show_imgui = new_show_imgui;
 		mouse_captured(!new_show_imgui);
@@ -1007,18 +1048,21 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 		}
 	}
 
-	if (auto imgui_key { linux_key_to_imgui(key) }) {
-		if (m_show_imgui)
-			ImGui::GetIO().AddKeyEvent(*imgui_key, pressed);
-	}
+	if (m_backend == Backend::SDL) {
+		if (auto imgui_key { linux_key_to_imgui(key) }) {
+			if (m_show_imgui)
+				ImGui::GetIO().AddKeyEvent(*imgui_key, pressed);
+		}
 
-	if (m_show_imgui && pressed) {
-		bool const shift_pressed { is_key_down(KEY_LEFTSHIFT)
-			|| is_key_down(KEY_RIGHTSHIFT) || (key == KEY_LEFTSHIFT && pressed)
-			|| (key == KEY_RIGHTSHIFT && pressed) };
+		if (m_show_imgui && pressed) {
+			bool const shift_pressed { is_key_down(KEY_LEFTSHIFT)
+				|| is_key_down(KEY_RIGHTSHIFT)
+				|| (key == KEY_LEFTSHIFT && pressed)
+				|| (key == KEY_RIGHTSHIFT && pressed) };
 
-		if (auto ch { linux_key_to_char(key, shift_pressed) })
-			ImGui::GetIO().AddInputCharacter(*ch);
+			if (auto ch { linux_key_to_char(key, shift_pressed) })
+				ImGui::GetIO().AddInputCharacter(*ch);
+		}
 	}
 
 	if (key < m_key_state.size())
@@ -1039,6 +1083,11 @@ auto Application::clamp_mouse_to_window(int width, int height) -> void
 
 auto Application::mouse_captured(bool new_state) -> void
 {
+	if (m_backend != Backend::SDL) {
+		m_mouse_captured = false;
+		return;
+	}
+
 	if (!SDL_SetWindowRelativeMouseMode(m_window, new_state)) {
 		m_logger.err("Failed to capture mouse");
 		return;
