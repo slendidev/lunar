@@ -611,10 +611,16 @@ auto VulkanRenderer::GL::bind_pipeline_if_needed() -> void
 	    vk::PipelineBindPoint::eGraphics, m_active_pipeline->get());
 }
 
-VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
+VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger,
+    std::span<std::string const> instance_extensions,
+    std::span<std::string const> device_extensions)
     : gl(*this)
     , m_window(window)
     , m_logger(logger)
+    , m_extra_instance_extensions(
+          instance_extensions.begin(), instance_extensions.end())
+    , m_extra_device_extensions(
+          device_extensions.begin(), device_extensions.end())
 {
 	if (m_window == nullptr) {
 		throw std::runtime_error("VulkanRenderer requires a valid window");
@@ -633,9 +639,15 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger)
 	imgui_init();
 }
 
-VulkanRenderer::VulkanRenderer(KmsSurfaceConfig /*config*/, Logger &logger)
+VulkanRenderer::VulkanRenderer(KmsSurfaceConfig /*config*/, Logger &logger,
+    std::span<std::string const> instance_extensions,
+    std::span<std::string const> device_extensions)
     : gl(*this)
     , m_logger(logger)
+    , m_extra_instance_extensions(
+          instance_extensions.begin(), instance_extensions.end())
+    , m_extra_device_extensions(
+          device_extensions.begin(), device_extensions.end())
 {
 	m_use_kms = true;
 	m_imgui_enabled = false;
@@ -706,6 +718,26 @@ VulkanRenderer::~VulkanRenderer()
 auto VulkanRenderer::resize(uint32_t width, uint32_t height) -> void
 {
 	recreate_swapchain(width, height);
+}
+
+auto VulkanRenderer::set_offscreen_extent(vk::Extent2D extent) -> void
+{
+	if (extent.width == 0 || extent.height == 0) {
+		return;
+	}
+
+	if (m_vk.draw_image.extent.width == extent.width
+	    && m_vk.draw_image.extent.height == extent.height) {
+		return;
+	}
+
+	m_device.waitIdle();
+	destroy_draw_image();
+	destroy_msaa_color_image();
+	destroy_depth_image();
+	create_draw_image(extent.width, extent.height);
+	create_msaa_color_image(extent.width, extent.height);
+	create_depth_image(extent.width, extent.height);
 }
 
 auto VulkanRenderer::set_antialiasing(AntiAliasingKind kind) -> void
@@ -1011,6 +1043,9 @@ auto VulkanRenderer::vk_init() -> void
 	if (m_use_kms) {
 		instance_builder.enable_extension(VK_KHR_DISPLAY_EXTENSION_NAME);
 	}
+	for (auto const &extension : m_extra_instance_extensions) {
+		instance_builder.enable_extension(extension.c_str());
+	}
 #ifndef NDEBUG
 	instance_builder.request_validation_layers();
 #endif
@@ -1048,21 +1083,25 @@ auto VulkanRenderer::vk_init() -> void
 	buffer_device_address_features.sType
 	    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
 	buffer_device_address_features.bufferDeviceAddress = VK_TRUE;
+	std::vector<char const *> desired_extensions {
+		VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+		VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+		VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+		VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+		VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
+		VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+		VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+		VK_KHR_MAINTENANCE1_EXTENSION_NAME,
+		VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
+		VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME,
+		VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+	};
+	for (auto const &extension : m_extra_device_extensions) {
+		desired_extensions.push_back(extension.c_str());
+	}
 	phys_device_selector.set_surface(m_vk.surface)
-	    .add_desired_extensions({
-	        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
-	        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-	        VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
-	        VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
-	        VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
-	        VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
-	        VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
-	        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
-	        VK_KHR_MAINTENANCE1_EXTENSION_NAME,
-	        VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
-	        VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME,
-	        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
-	    })
+	    .add_desired_extensions(desired_extensions)
 	    .set_required_features_13(features_13)
 	    .add_required_extension_features(buffer_device_address_features);
 	auto physical_device_selector_return { phys_device_selector.select() };
@@ -1746,6 +1785,87 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 		return;
 	}
 	VK_CHECK(m_logger, present_result);
+}
+
+auto VulkanRenderer::render_to_image(vk::Image target_image,
+    vk::Extent2D target_extent, std::function<void(GL &)> const &record) -> void
+{
+	defer(m_vk.frame_number++);
+
+	if (!target_image || target_extent.width == 0
+	    || target_extent.height == 0) {
+		return;
+	}
+
+	process_render_commands();
+
+	auto &frame = m_vk.get_current_frame();
+	VK_CHECK(m_logger,
+	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
+	frame.deletion_queue.flush();
+	frame.frame_descriptors.clear_pools(m_vkb.dev.device);
+
+	auto raw_fence { static_cast<VkFence>(frame.render_fence.get()) };
+	VK_CHECK(m_logger, vkResetFences(m_vkb.dev.device, 1, &raw_fence));
+
+	auto cmd { frame.main_command_buffer.get() };
+	cmd.reset();
+
+	m_vk.draw_extent.width = m_vk.draw_image.extent.width;
+	m_vk.draw_extent.height = m_vk.draw_image.extent.height;
+
+	vk::CommandBufferBeginInfo cmd_begin_info {};
+	cmd_begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+	VK_CHECK(m_logger,
+	    vkBeginCommandBuffer(static_cast<VkCommandBuffer>(cmd),
+	        reinterpret_cast<VkCommandBufferBeginInfo *>(&cmd_begin_info)));
+
+	bool const msaa_enabled = m_vk.msaa_samples != vk::SampleCountFlagBits::e1;
+
+	vkutil::transition_image(cmd, m_vk.draw_image.image, m_vk.draw_image_layout,
+	    vk::ImageLayout::eColorAttachmentOptimal);
+	m_vk.draw_image_layout = vk::ImageLayout::eColorAttachmentOptimal;
+
+	if (msaa_enabled) {
+		vkutil::transition_image(cmd, m_vk.msaa_color_image.image,
+		    m_vk.msaa_color_image_layout,
+		    vk::ImageLayout::eColorAttachmentOptimal);
+		m_vk.msaa_color_image_layout = vk::ImageLayout::eColorAttachmentOptimal;
+	}
+
+	vkutil::transition_image(cmd, m_vk.depth_image.image,
+	    m_vk.depth_image_layout, vk::ImageLayout::eDepthAttachmentOptimal);
+	m_vk.depth_image_layout = vk::ImageLayout::eDepthAttachmentOptimal;
+
+	gl.begin_drawing(cmd, m_vk.draw_image, &m_vk.depth_image);
+	if (record) {
+		record(gl);
+	}
+	gl.end_drawing();
+
+	vkutil::transition_image(cmd, m_vk.draw_image.image, m_vk.draw_image_layout,
+	    vk::ImageLayout::eTransferSrcOptimal);
+	m_vk.draw_image_layout = vk::ImageLayout::eTransferSrcOptimal;
+
+	vkutil::transition_image(cmd, target_image, vk::ImageLayout::eUndefined,
+	    vk::ImageLayout::eTransferDstOptimal);
+
+	vkutil::copy_image_to_image(cmd, m_vk.draw_image.image, target_image,
+	    m_vk.draw_extent, target_extent);
+
+	vkutil::transition_image(cmd, target_image,
+	    vk::ImageLayout::eTransferDstOptimal,
+	    vk::ImageLayout::eColorAttachmentOptimal);
+
+	cmd.end();
+
+	auto command_buffer_info { vkinit::command_buffer_submit_info(cmd) };
+	auto submit_info { vkinit::submit_info2(
+		&command_buffer_info, nullptr, nullptr) };
+
+	m_vk.graphics_queue.submit2(submit_info, frame.render_fence.get());
+	VK_CHECK(m_logger,
+	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
 }
 
 auto VulkanRenderer::draw_imgui(

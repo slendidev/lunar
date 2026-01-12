@@ -133,12 +133,19 @@ struct VulkanRenderer {
 
 	struct KmsSurfaceConfig { };
 
-	VulkanRenderer(SDL_Window *window, Logger &logger);
-	VulkanRenderer(KmsSurfaceConfig config, Logger &logger);
+	VulkanRenderer(SDL_Window *window, Logger &logger,
+	    std::span<std::string const> instance_extensions = {},
+	    std::span<std::string const> device_extensions = {});
+	VulkanRenderer(KmsSurfaceConfig config, Logger &logger,
+	    std::span<std::string const> instance_extensions = {},
+	    std::span<std::string const> device_extensions = {});
 	~VulkanRenderer();
 
 	auto render(std::function<void(GL &)> const &record = {}) -> void;
+	auto render_to_image(vk::Image target_image, vk::Extent2D target_extent,
+	    std::function<void(GL &)> const &record = {}) -> void;
 	auto resize(uint32_t width, uint32_t height) -> void;
+	auto set_offscreen_extent(vk::Extent2D extent) -> void;
 	auto set_antialiasing(AntiAliasingKind kind) -> void;
 	auto set_antialiasing_immediate(AntiAliasingKind kind) -> void;
 	auto antialiasing() const -> AntiAliasingKind
@@ -181,6 +188,16 @@ struct VulkanRenderer {
 	auto mesh_pipeline() -> Pipeline & { return m_vk.mesh_pipeline; }
 	auto triangle_pipeline() -> Pipeline & { return m_vk.triangle_pipeline; }
 	auto device() const -> vk::Device { return m_device; }
+	auto instance() const -> vk::Instance { return m_instance; }
+	auto physical_device() const -> vk::PhysicalDevice
+	{
+		return m_physical_device;
+	}
+	auto graphics_queue() const -> vk::Queue { return m_vk.graphics_queue; }
+	auto graphics_queue_family() const -> uint32_t
+	{
+		return m_vk.graphics_queue_family;
+	}
 	auto draw_image_format() const -> vk::Format
 	{
 		return m_vk.draw_image.format;
@@ -383,6 +400,8 @@ private:
 	vk::PhysicalDevice m_kms_physical_device {};
 	vk::Extent2D m_kms_extent {};
 	bool m_kms_physical_device_set { false };
+	std::vector<std::string> m_extra_instance_extensions {};
+	std::vector<std::string> m_extra_device_extensions {};
 };
 
 } // namespace Lunar

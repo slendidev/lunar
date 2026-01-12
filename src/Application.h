@@ -3,11 +3,15 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
 #include <linux/input-event-codes.h>
+#include <openxr/openxr.h>
 
 #include "Loader.h"
 #include "Logger.h"
@@ -22,6 +26,7 @@ struct udev;
 namespace Lunar {
 
 struct VulkanRenderer;
+struct OpenXrState;
 
 struct Application {
 	auto run() -> void;
@@ -52,7 +57,22 @@ private:
 	auto shutdown_input() -> void;
 	auto process_libinput_events() -> void;
 	auto handle_keyboard_event(libinput_event_keyboard *event) -> void;
+	auto handle_pointer_motion(libinput_event_pointer *event) -> void;
+	auto handle_pointer_button(libinput_event_pointer *event) -> void;
+	auto handle_pointer_axis(libinput_event_pointer *event) -> void;
+	auto handle_pointer_frame() -> void;
+	auto handle_pointer_end_frame() -> void;
+	auto handle_pointer_cancel() -> void;
+	auto handle_keyboard_key(std::optional<uint32_t> key, bool pressed) -> void;
 	auto clamp_mouse_to_window(int width, int height) -> void;
+	auto init_openxr() -> void;
+	auto init_openxr_session() -> void;
+	auto shutdown_openxr() -> void;
+	auto poll_openxr_events() -> void;
+	auto render_openxr_frame(
+	    std::function<void(VulkanRenderer::GL &)> const &record,
+	    float dt_seconds) -> bool;
+	auto update_camera_from_xr_view(XrView const &view) -> void;
 
 	SDL_Window *m_window { nullptr };
 	Backend m_backend { Backend::SDL };
@@ -63,6 +83,8 @@ private:
 
 	udev *m_udev { nullptr };
 	libinput *m_libinput { nullptr };
+
+	std::unique_ptr<OpenXrState> m_openxr {};
 
 	bool m_running { true };
 	bool m_mouse_captured { false };

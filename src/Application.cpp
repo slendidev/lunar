@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <format>
@@ -13,10 +14,15 @@
 #include <numbers>
 #include <optional>
 #include <print>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unistd.h>
+#include <vulkan/vulkan.h>
+
+#define XR_USE_GRAPHICS_API_VULKAN
+#include <openxr/openxr_platform.h>
 
 #if defined(__clang__)
 #	pragma clang diagnostic push
@@ -399,9 +405,69 @@ auto linux_key_to_char(uint32_t keycode, bool shift) -> std::optional<char32_t>
 	}
 }
 
+auto split_extension_list(std::string_view list) -> std::vector<std::string>
+{
+	std::vector<std::string> extensions;
+	std::size_t start = 0;
+	while (start < list.size()) {
+		while (start < list.size() && list[start] == ' ') {
+			++start;
+		}
+		if (start >= list.size()) {
+			break;
+		}
+		auto end = list.find(' ', start);
+		if (end == std::string_view::npos) {
+			end = list.size();
+		}
+		auto token = list.substr(start, end - start);
+		if (!token.empty()) {
+			extensions.emplace_back(token);
+		}
+		start = end + 1;
+	}
+	return extensions;
+}
+
+auto xr_rotate_vector(XrQuaternionf q, smath::Vec3 v) -> smath::Vec3
+{
+	smath::Vec3 u { q.x, q.y, q.z };
+	float const s = q.w;
+	auto const dot = u.dot(v);
+	auto const u_dot = u.dot(u);
+	auto const cross = u.cross(v);
+	return (u * (2.0f * dot)) + (v * (s * s - u_dot)) + (cross * (2.0f * s));
+}
+
 } // namespace
 
 namespace Lunar {
+
+struct OpenXrSwapchain {
+	XrSwapchain handle { XR_NULL_HANDLE };
+	vk::Extent2D extent {};
+	std::vector<XrSwapchainImageVulkanKHR> images {};
+};
+
+struct OpenXrState {
+	bool enabled { false };
+	bool session_running { false };
+	XrInstance instance { XR_NULL_HANDLE };
+	XrSystemId system_id { XR_NULL_SYSTEM_ID };
+	XrSession session { XR_NULL_HANDLE };
+	XrSpace app_space { XR_NULL_HANDLE };
+	XrSessionState session_state { XR_SESSION_STATE_UNKNOWN };
+	XrViewConfigurationType view_type {
+		XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO
+	};
+	int64_t color_format { 0 };
+	std::vector<XrView> views {};
+	std::vector<XrViewConfigurationView> view_configs {};
+	std::vector<OpenXrSwapchain> swapchains {};
+	std::vector<std::string> instance_extensions {};
+	std::vector<std::string> device_extensions {};
+	PFN_xrGetVulkanGraphicsDevice2KHR get_graphics_device { nullptr };
+};
 
 Application::Application()
 {
@@ -410,6 +476,15 @@ Application::Application()
 	bool const has_display
 	    = (display_env && *display_env) || (wayland_env && *wayland_env);
 	m_backend = has_display ? Backend::SDL : Backend::KMS;
+
+	init_openxr();
+
+	auto instance_extensions = std::span<std::string const> {};
+	auto device_extensions = std::span<std::string const> {};
+	if (m_openxr) {
+		instance_extensions = m_openxr->instance_extensions;
+		device_extensions = m_openxr->device_extensions;
+	}
 
 	if (m_backend == Backend::SDL) {
 		if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -424,18 +499,22 @@ Application::Application()
 			throw std::runtime_error("App init fail");
 		}
 
-		m_renderer = std::make_unique<VulkanRenderer>(m_window, m_logger);
+		m_renderer = std::make_unique<VulkanRenderer>(
+		    m_window, m_logger, instance_extensions, device_extensions);
 
 		m_window_focused
 		    = (SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 	} else {
 		m_logger.info("No display server detected; using KMS backend");
 		m_renderer = std::make_unique<VulkanRenderer>(
-		    VulkanRenderer::KmsSurfaceConfig {}, m_logger);
+		    VulkanRenderer::KmsSurfaceConfig {}, m_logger, instance_extensions,
+		    device_extensions);
 		m_window_focused = true;
 	}
 	m_renderer->set_antialiasing_immediate(
 	    VulkanRenderer::AntiAliasingKind::MSAA_4X);
+
+	init_openxr_session();
 
 	m_skybox.init(*m_renderer, asset_directory() / "cubemap.png");
 	init_test_meshes();
@@ -452,6 +531,7 @@ Application::Application()
 
 Application::~Application()
 {
+	shutdown_openxr();
 	if (m_renderer) {
 		m_renderer->device().waitIdle();
 		m_skybox.destroy(*m_renderer);
@@ -554,7 +634,8 @@ auto Application::run() -> void
 {
 	SDL_Event e;
 	bool const use_sdl = (m_backend == Backend::SDL);
-	bool const use_imgui = use_sdl;
+	bool const openxr_enabled = m_openxr != nullptr;
+	bool const use_imgui = use_sdl && !openxr_enabled;
 
 	if (use_imgui) {
 		ImGuiIO &io = ImGui::GetIO();
@@ -565,6 +646,9 @@ auto Application::run() -> void
 	float fps { 0.0f };
 	while (m_running) {
 		GZoneScopedN("Frame");
+		if (m_openxr) {
+			poll_openxr_events();
+		}
 		uint64_t now { 0 };
 		if (use_sdl) {
 			now = SDL_GetTicks();
@@ -581,6 +665,8 @@ auto Application::run() -> void
 
 		if (dt > 0)
 			fps = 1000.0f / (float)dt;
+
+		bool const xr_active = m_openxr != nullptr;
 
 		{
 			GZoneScopedN("Input");
@@ -643,7 +729,7 @@ auto Application::run() -> void
 				m_running = false;
 		}
 
-		{
+		if (!xr_active) {
 			GZoneScopedN("CameraUpdate");
 
 			auto const target_offset { m_camera.target - m_camera.position };
@@ -848,74 +934,45 @@ auto Application::run() -> void
 			ImGui::Render();
 		}
 
-		m_renderer->render([&](VulkanRenderer::GL &gl) {
+		auto record_scene = [&](VulkanRenderer::GL &gl) {
 			GZoneScopedN("Render");
 			auto view { smath::matrix_look_at(
 				m_camera.position, m_camera.target, m_camera.up) };
 			auto const draw_extent = m_renderer->draw_extent();
-			auto const aspect = draw_extent.height == 0
-			    ? 1.0f
-			    : static_cast<float>(draw_extent.width)
-			        / static_cast<float>(draw_extent.height);
-			auto projection { smath::matrix_perspective(
-				m_camera.fovy, aspect, 0.1f, 10000.0f) };
-			projection[1][1] *= -1;
-			auto view_projection { projection * view };
-
-			auto skybox_view { view };
-			skybox_view[3][0] = 0.0f;
-			skybox_view[3][1] = 0.0f;
-			skybox_view[3][2] = 0.0f;
-			m_skybox.draw(gl, *m_renderer, projection * skybox_view);
+			auto const aspect = static_cast<float>(draw_extent.width)
+			    / static_cast<float>(draw_extent.height);
+			auto const proj = smath::matrix_perspective(
+			    m_camera.fovy, aspect, 0.1f, 10000.0f);
+			auto const view_projection = proj * view;
+			gl.set_transform(view_projection);
+			for (auto const &mesh : m_test_meshes) {
+				for (auto const &surface : mesh->surfaces) {
+					gl.draw_mesh(mesh->mesh_buffers, smath::Mat4::identity(),
+					    surface.count, surface.start_index);
+				}
+			}
+			m_skybox.draw(gl, *m_renderer, view_projection);
 
 			gl.set_transform(view_projection);
-
-			gl.set_texture();
-			auto const &meshes { m_test_meshes };
-			if (meshes.size() > 2 && !meshes[2]->surfaces.empty()) {
-				auto const &surface = meshes[2]->surfaces[0];
-				gl.draw_mesh(meshes[2]->mesh_buffers,
-				    view_projection
-				        * smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
-				    surface.count, surface.start_index);
-			}
-
-			gl.push_transform();
-			gl.set_transform(view_projection
-			    * smath::translate(smath::Vec3 { 0.0f, 0.0f, 5.0f })
-			    * smath::Quaternion<float>::from_axis_angle(
-			        smath::Vec3 { 0.0f, 1.0f, 0.0f }, smath::deg(180))
-			        .as_matrix());
-
-			gl.set_texture(&m_renderer->white_texture());
-
-			gl.begin(VulkanRenderer::GL::GeometryKind::Quads);
-
-			gl.color(smath::Vec3 { 0.0f, 0.0f, 0.0f });
-			gl.uv(smath::Vec2 { 1.0f, 1.0f });
-			gl.vert(smath::Vec3 { 0.5f, -0.5f, 0.0f });
-
-			gl.color(smath::Vec3 { 0.5f, 0.5f, 0.5f });
-			gl.uv(smath::Vec2 { 1.0f, 0.0f });
-			gl.vert(smath::Vec3 { 0.5f, 0.5f, 0.0f });
-
-			gl.color(smath::Vec3 { 1.0f, 0.0f, 0.0f });
-			gl.uv(smath::Vec2 { 0.0f, 1.0f });
-			gl.vert(smath::Vec3 { -0.5f, -0.5f, 0.0f });
-
-			gl.color(smath::Vec3 { 0.0f, 1.0f, 0.0f });
-			gl.uv(smath::Vec2 { 0.0f, 0.0f });
-			gl.vert(smath::Vec3 { -0.5f, 0.5f, 0.0f });
-
-			gl.end();
-
+			gl.draw_sphere({ 0.0f, 0.0f, 0.0f }, 0.1f, 16, 32,
+			    smath::Vec4 { Colors::RED, 1.0f });
+			gl.draw_sphere({ 0.0f, 0.0f, 0.0f }, 0.11f, 16, 32,
+			    smath::Vec4 { Colors::DARK_RED, 1.0f });
 			gl.draw_rectangle({ -0.5f, 0.5f }, { 0.5f, 0.5f });
 			gl.draw_rectangle(
 			    { 0, 0.5f }, { 0.5f, 0.5f }, { Colors::TEAL, 1.0f });
 
 			gl.set_transform(view_projection);
 			gl.draw_sphere(m_camera.target, 0.01f);
-		});
+		};
+
+		if (xr_active) {
+			if (m_openxr && m_openxr->session_running) {
+				render_openxr_frame(record_scene, dt_seconds);
+			}
+		} else {
+			m_renderer->render(record_scene);
+		}
 #if defined(TRACY_ENABLE)
 		FrameMark;
 #endif
@@ -972,6 +1029,526 @@ auto Application::shutdown_input() -> void
 	}
 }
 
+auto Application::init_openxr() -> void
+{
+	m_openxr = std::make_unique<OpenXrState>();
+
+	XrInstanceCreateInfo create_info {};
+	create_info.type = XR_TYPE_INSTANCE_CREATE_INFO;
+	create_info.next = nullptr;
+	std::strncpy(create_info.applicationInfo.applicationName, "Lunar",
+	    XR_MAX_APPLICATION_NAME_SIZE - 1);
+	std::strncpy(create_info.applicationInfo.engineName, "Lunar",
+	    XR_MAX_ENGINE_NAME_SIZE - 1);
+	create_info.applicationInfo.applicationVersion = 1;
+	create_info.applicationInfo.engineVersion = 1;
+	create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
+
+	std::array<char const *, 1> const extensions {
+		XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
+	};
+	create_info.enabledExtensionCount
+	    = static_cast<uint32_t>(extensions.size());
+	create_info.enabledExtensionNames = extensions.data();
+
+	auto const instance_result
+	    = xrCreateInstance(&create_info, &m_openxr->instance);
+	if (XR_FAILED(instance_result)) {
+		m_logger.info("OpenXR not available (no instance)");
+		m_openxr.reset();
+		return;
+	}
+
+	XrSystemGetInfo system_info {};
+	system_info.type = XR_TYPE_SYSTEM_GET_INFO;
+	system_info.next = nullptr;
+	system_info.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+	auto const system_result
+	    = xrGetSystem(m_openxr->instance, &system_info, &m_openxr->system_id);
+	if (XR_FAILED(system_result)) {
+		m_logger.info("OpenXR system not detected");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+
+	PFN_xrGetVulkanInstanceExtensionsKHR get_instance_exts {};
+	auto instance_ext_result = xrGetInstanceProcAddr(m_openxr->instance,
+	    "xrGetVulkanInstanceExtensionsKHR",
+	    reinterpret_cast<PFN_xrVoidFunction *>(&get_instance_exts));
+	if (XR_FAILED(instance_ext_result) || !get_instance_exts) {
+		m_logger.warn("OpenXR missing Vulkan instance extensions");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+
+	PFN_xrGetVulkanDeviceExtensionsKHR get_device_exts {};
+	auto device_ext_result = xrGetInstanceProcAddr(m_openxr->instance,
+	    "xrGetVulkanDeviceExtensionsKHR",
+	    reinterpret_cast<PFN_xrVoidFunction *>(&get_device_exts));
+	if (XR_FAILED(device_ext_result) || !get_device_exts) {
+		m_logger.warn("OpenXR missing Vulkan device extensions");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+
+	uint32_t instance_ext_size = 0;
+	instance_ext_result = get_instance_exts(m_openxr->instance,
+	    m_openxr->system_id, 0, &instance_ext_size, nullptr);
+	if (XR_FAILED(instance_ext_result) || instance_ext_size == 0) {
+		m_logger.warn("Failed to query OpenXR instance extensions");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+	std::string instance_ext_string(instance_ext_size, '\0');
+	instance_ext_result
+	    = get_instance_exts(m_openxr->instance, m_openxr->system_id,
+	        instance_ext_size, &instance_ext_size, instance_ext_string.data());
+	if (XR_FAILED(instance_ext_result)) {
+		m_logger.warn("Failed to read OpenXR instance extensions");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+	m_openxr->instance_extensions = split_extension_list(
+	    std::string_view { instance_ext_string.c_str() });
+
+	uint32_t device_ext_size = 0;
+	device_ext_result = get_device_exts(
+	    m_openxr->instance, m_openxr->system_id, 0, &device_ext_size, nullptr);
+	if (XR_FAILED(device_ext_result) || device_ext_size == 0) {
+		m_logger.warn("Failed to query OpenXR device extensions");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+	std::string device_ext_string(device_ext_size, '\0');
+	device_ext_result = get_device_exts(m_openxr->instance, m_openxr->system_id,
+	    device_ext_size, &device_ext_size, device_ext_string.data());
+	if (XR_FAILED(device_ext_result)) {
+		m_logger.warn("Failed to read OpenXR device extensions");
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr.reset();
+		return;
+	}
+	m_openxr->device_extensions
+	    = split_extension_list(std::string_view { device_ext_string.c_str() });
+	m_openxr->enabled = true;
+
+	auto graphics_device_result = xrGetInstanceProcAddr(m_openxr->instance,
+	    "xrGetVulkanGraphicsDevice2KHR",
+	    reinterpret_cast<PFN_xrVoidFunction *>(&m_openxr->get_graphics_device));
+	if (XR_FAILED(graphics_device_result) || !m_openxr->get_graphics_device) {
+		m_logger.warn("OpenXR missing Vulkan graphics device hook");
+		m_openxr->get_graphics_device = nullptr;
+	}
+
+	m_logger.info("OpenXR system detected");
+}
+
+auto Application::init_openxr_session() -> void
+{
+	if (!m_openxr || !m_renderer) {
+		return;
+	}
+	if (!m_openxr->get_graphics_device) {
+		m_logger.warn("OpenXR graphics device hook unavailable");
+		shutdown_openxr();
+		return;
+	}
+
+	XrVulkanGraphicsDeviceGetInfoKHR device_info {};
+	device_info.type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR;
+	device_info.next = nullptr;
+	device_info.systemId = m_openxr->system_id;
+	device_info.vulkanInstance
+	    = static_cast<VkInstance>(m_renderer->instance());
+	VkPhysicalDevice xr_physical_device {};
+	auto const phys_result = m_openxr->get_graphics_device(
+	    m_openxr->instance, &device_info, &xr_physical_device);
+	if (XR_FAILED(phys_result)) {
+		m_logger.warn("Failed to fetch OpenXR Vulkan device");
+		shutdown_openxr();
+		return;
+	}
+
+	if (xr_physical_device
+	    != static_cast<VkPhysicalDevice>(m_renderer->physical_device())) {
+		m_logger.warn("OpenXR device differs from selected Vulkan device");
+	}
+
+	XrGraphicsBindingVulkan2KHR binding {};
+	binding.type = XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR;
+	binding.next = nullptr;
+	binding.instance = static_cast<VkInstance>(m_renderer->instance());
+	binding.physicalDevice
+	    = static_cast<VkPhysicalDevice>(m_renderer->physical_device());
+	binding.device = static_cast<VkDevice>(m_renderer->device());
+	binding.queueFamilyIndex = m_renderer->graphics_queue_family();
+	binding.queueIndex = 0;
+
+	XrSessionCreateInfo session_info {};
+	session_info.type = XR_TYPE_SESSION_CREATE_INFO;
+	session_info.next = &binding;
+	session_info.systemId = m_openxr->system_id;
+	auto const session_result = xrCreateSession(
+	    m_openxr->instance, &session_info, &m_openxr->session);
+	if (XR_FAILED(session_result)) {
+		m_logger.warn("Failed to create OpenXR session");
+		shutdown_openxr();
+		return;
+	}
+
+	XrReferenceSpaceCreateInfo space_info {};
+	space_info.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
+	space_info.next = nullptr;
+	space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+	space_info.poseInReferenceSpace.orientation.w = 1.0f;
+	auto const space_result = xrCreateReferenceSpace(
+	    m_openxr->session, &space_info, &m_openxr->app_space);
+	if (XR_FAILED(space_result)) {
+		m_logger.warn("Failed to create OpenXR space");
+		shutdown_openxr();
+		return;
+	}
+
+	uint32_t view_count = 0;
+	auto const view_count_result
+	    = xrEnumerateViewConfigurationViews(m_openxr->instance,
+	        m_openxr->system_id, m_openxr->view_type, 0, &view_count, nullptr);
+	if (XR_FAILED(view_count_result) || view_count == 0) {
+		m_logger.warn("OpenXR view configuration missing");
+		shutdown_openxr();
+		return;
+	}
+	m_openxr->view_configs.resize(view_count);
+	for (auto &config : m_openxr->view_configs) {
+		config = XrViewConfigurationView {};
+		config.type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+		config.next = nullptr;
+	}
+	auto const view_result = xrEnumerateViewConfigurationViews(
+	    m_openxr->instance, m_openxr->system_id, m_openxr->view_type,
+	    view_count, &view_count, m_openxr->view_configs.data());
+	if (XR_FAILED(view_result)) {
+		m_logger.warn("Failed to enumerate OpenXR views");
+		shutdown_openxr();
+		return;
+	}
+	m_openxr->views.resize(view_count);
+	for (auto &view : m_openxr->views) {
+		view = XrView {};
+		view.type = XR_TYPE_VIEW;
+		view.next = nullptr;
+	}
+
+	uint32_t format_count = 0;
+	auto const format_count_result = xrEnumerateSwapchainFormats(
+	    m_openxr->session, 0, &format_count, nullptr);
+	if (XR_FAILED(format_count_result) || format_count == 0) {
+		m_logger.warn("OpenXR swapchain formats unavailable");
+		shutdown_openxr();
+		return;
+	}
+	std::vector<int64_t> formats(format_count);
+	auto const format_result = xrEnumerateSwapchainFormats(
+	    m_openxr->session, format_count, &format_count, formats.data());
+	if (XR_FAILED(format_result)) {
+		m_logger.warn("Failed to enumerate OpenXR swapchain formats");
+		shutdown_openxr();
+		return;
+	}
+
+	std::array<int64_t, 4> const preferred_formats {
+		static_cast<int64_t>(VK_FORMAT_B8G8R8A8_SRGB),
+		static_cast<int64_t>(VK_FORMAT_B8G8R8A8_UNORM),
+		static_cast<int64_t>(VK_FORMAT_R8G8B8A8_SRGB),
+		static_cast<int64_t>(VK_FORMAT_R8G8B8A8_UNORM),
+	};
+	m_openxr->color_format = formats.front();
+	for (auto const preferred : preferred_formats) {
+		auto const found = std::find(formats.begin(), formats.end(), preferred);
+		if (found != formats.end()) {
+			m_openxr->color_format = *found;
+			break;
+		}
+	}
+
+	m_openxr->swapchains.clear();
+	m_openxr->swapchains.resize(view_count);
+	for (uint32_t i = 0; i < view_count; ++i) {
+		auto const &view_config = m_openxr->view_configs[i];
+		XrSwapchainCreateInfo swapchain_info {};
+		swapchain_info.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
+		swapchain_info.next = nullptr;
+		swapchain_info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT
+		    | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+		swapchain_info.format = m_openxr->color_format;
+		swapchain_info.sampleCount
+		    = view_config.recommendedSwapchainSampleCount;
+		swapchain_info.width = view_config.recommendedImageRectWidth;
+		swapchain_info.height = view_config.recommendedImageRectHeight;
+		swapchain_info.faceCount = 1;
+		swapchain_info.arraySize = 1;
+		swapchain_info.mipCount = 1;
+
+		auto const swapchain_result = xrCreateSwapchain(m_openxr->session,
+		    &swapchain_info, &m_openxr->swapchains[i].handle);
+		if (XR_FAILED(swapchain_result)) {
+			m_logger.warn("Failed to create OpenXR swapchain");
+			shutdown_openxr();
+			return;
+		}
+
+		m_openxr->swapchains[i].extent
+		    = vk::Extent2D { swapchain_info.width, swapchain_info.height };
+
+		uint32_t image_count = 0;
+		auto const image_count_result = xrEnumerateSwapchainImages(
+		    m_openxr->swapchains[i].handle, 0, &image_count, nullptr);
+		if (XR_FAILED(image_count_result) || image_count == 0) {
+			m_logger.warn("Failed to enumerate OpenXR swapchain images");
+			shutdown_openxr();
+			return;
+		}
+		m_openxr->swapchains[i].images.resize(image_count);
+		for (auto &image : m_openxr->swapchains[i].images) {
+			image = XrSwapchainImageVulkanKHR {};
+			image.type = XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR;
+			image.next = nullptr;
+		}
+		auto const image_result = xrEnumerateSwapchainImages(
+		    m_openxr->swapchains[i].handle, image_count, &image_count,
+		    reinterpret_cast<XrSwapchainImageBaseHeader *>(
+		        m_openxr->swapchains[i].images.data()));
+		if (XR_FAILED(image_result)) {
+			m_logger.warn("Failed to read OpenXR swapchain images");
+			shutdown_openxr();
+			return;
+		}
+	}
+
+	if (!m_openxr->swapchains.empty()) {
+		m_renderer->set_offscreen_extent(m_openxr->swapchains.front().extent);
+	}
+	m_logger.info("OpenXR session initialized");
+}
+
+auto Application::shutdown_openxr() -> void
+{
+	if (!m_openxr) {
+		return;
+	}
+
+	for (auto &swapchain : m_openxr->swapchains) {
+		if (swapchain.handle != XR_NULL_HANDLE) {
+			xrDestroySwapchain(swapchain.handle);
+			swapchain.handle = XR_NULL_HANDLE;
+		}
+	}
+	m_openxr->swapchains.clear();
+
+	if (m_openxr->app_space != XR_NULL_HANDLE) {
+		xrDestroySpace(m_openxr->app_space);
+		m_openxr->app_space = XR_NULL_HANDLE;
+	}
+
+	if (m_openxr->session != XR_NULL_HANDLE) {
+		xrDestroySession(m_openxr->session);
+		m_openxr->session = XR_NULL_HANDLE;
+	}
+
+	if (m_openxr->instance != XR_NULL_HANDLE) {
+		xrDestroyInstance(m_openxr->instance);
+		m_openxr->instance = XR_NULL_HANDLE;
+	}
+
+	m_openxr.reset();
+}
+
+auto Application::poll_openxr_events() -> void
+{
+	if (!m_openxr) {
+		return;
+	}
+
+	XrEventDataBuffer event {};
+	event.type = XR_TYPE_EVENT_DATA_BUFFER;
+	event.next = nullptr;
+	while (xrPollEvent(m_openxr->instance, &event) == XR_SUCCESS) {
+		switch (event.type) {
+		case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
+			auto const &state_event
+			    = *reinterpret_cast<XrEventDataSessionStateChanged const *>(
+			        &event);
+			m_openxr->session_state = state_event.state;
+			if (state_event.state == XR_SESSION_STATE_READY
+			    && !m_openxr->session_running) {
+				XrSessionBeginInfo begin_info {};
+				begin_info.type = XR_TYPE_SESSION_BEGIN_INFO;
+				begin_info.next = nullptr;
+				begin_info.primaryViewConfigurationType = m_openxr->view_type;
+				if (XR_SUCCEEDED(
+				        xrBeginSession(m_openxr->session, &begin_info))) {
+					m_openxr->session_running = true;
+				}
+			} else if (state_event.state == XR_SESSION_STATE_STOPPING
+			    && m_openxr->session_running) {
+				xrEndSession(m_openxr->session);
+				m_openxr->session_running = false;
+			} else if (state_event.state == XR_SESSION_STATE_EXITING
+			    || state_event.state == XR_SESSION_STATE_LOSS_PENDING) {
+				m_running = false;
+			}
+			break;
+		}
+		default:
+			break;
+		}
+		event = XrEventDataBuffer {};
+		event.type = XR_TYPE_EVENT_DATA_BUFFER;
+		event.next = nullptr;
+	}
+}
+
+auto Application::render_openxr_frame(
+    std::function<void(VulkanRenderer::GL &)> const &record,
+    float /*dt_seconds*/) -> bool
+{
+	if (!m_openxr || !m_openxr->session_running) {
+		return false;
+	}
+
+	XrFrameWaitInfo wait_info {};
+	wait_info.type = XR_TYPE_FRAME_WAIT_INFO;
+	wait_info.next = nullptr;
+	XrFrameState frame_state {};
+	frame_state.type = XR_TYPE_FRAME_STATE;
+	frame_state.next = nullptr;
+	if (XR_FAILED(xrWaitFrame(m_openxr->session, &wait_info, &frame_state))) {
+		return false;
+	}
+
+	XrFrameBeginInfo begin_info {};
+	begin_info.type = XR_TYPE_FRAME_BEGIN_INFO;
+	begin_info.next = nullptr;
+	if (XR_FAILED(xrBeginFrame(m_openxr->session, &begin_info))) {
+		return false;
+	}
+
+	if (!frame_state.shouldRender) {
+		XrFrameEndInfo end_info {};
+		end_info.type = XR_TYPE_FRAME_END_INFO;
+		end_info.next = nullptr;
+		end_info.displayTime = frame_state.predictedDisplayTime;
+		end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+		end_info.layerCount = 0;
+		end_info.layers = nullptr;
+		xrEndFrame(m_openxr->session, &end_info);
+		return true;
+	}
+
+	XrViewLocateInfo locate_info {};
+	locate_info.type = XR_TYPE_VIEW_LOCATE_INFO;
+	locate_info.next = nullptr;
+	locate_info.viewConfigurationType = m_openxr->view_type;
+	locate_info.displayTime = frame_state.predictedDisplayTime;
+	locate_info.space = m_openxr->app_space;
+
+	XrViewState view_state {};
+	view_state.type = XR_TYPE_VIEW_STATE;
+	view_state.next = nullptr;
+	uint32_t view_count = static_cast<uint32_t>(m_openxr->views.size());
+	view_count = std::min(
+	    view_count, static_cast<uint32_t>(m_openxr->swapchains.size()));
+	if (XR_FAILED(xrLocateViews(m_openxr->session, &locate_info, &view_state,
+	        view_count, &view_count, m_openxr->views.data()))) {
+		return false;
+	}
+
+	std::vector<XrCompositionLayerProjectionView> projection_views(view_count);
+	for (auto &projection_view : projection_views) {
+		projection_view = XrCompositionLayerProjectionView {};
+		projection_view.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
+		projection_view.next = nullptr;
+	}
+	for (uint32_t i = 0; i < view_count; ++i) {
+		auto &swapchain = m_openxr->swapchains[i];
+		uint32_t image_index = 0;
+		XrSwapchainImageAcquireInfo acquire_info {};
+		acquire_info.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
+		acquire_info.next = nullptr;
+		if (XR_FAILED(xrAcquireSwapchainImage(
+		        swapchain.handle, &acquire_info, &image_index))) {
+			continue;
+		}
+
+		XrSwapchainImageWaitInfo swapchain_wait_info {};
+		swapchain_wait_info.type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO;
+		swapchain_wait_info.next = nullptr;
+		swapchain_wait_info.timeout = XR_INFINITE_DURATION;
+		if (XR_FAILED(
+		        xrWaitSwapchainImage(swapchain.handle, &swapchain_wait_info))) {
+			continue;
+		}
+
+		update_camera_from_xr_view(m_openxr->views[i]);
+		m_renderer->render_to_image(
+		    vk::Image { swapchain.images[image_index].image }, swapchain.extent,
+		    record);
+
+		XrSwapchainImageReleaseInfo release_info {};
+		release_info.type = XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO;
+		release_info.next = nullptr;
+		xrReleaseSwapchainImage(swapchain.handle, &release_info);
+
+		projection_views[i].pose = m_openxr->views[i].pose;
+		projection_views[i].fov = m_openxr->views[i].fov;
+		projection_views[i].subImage.swapchain = swapchain.handle;
+		projection_views[i].subImage.imageRect.offset = { 0, 0 };
+		projection_views[i].subImage.imageRect.extent
+		    = { static_cast<int32_t>(swapchain.extent.width),
+			      static_cast<int32_t>(swapchain.extent.height) };
+		projection_views[i].subImage.imageArrayIndex = 0;
+	}
+
+	XrCompositionLayerProjection layer {};
+	layer.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION;
+	layer.next = nullptr;
+	layer.space = m_openxr->app_space;
+	layer.viewCount = view_count;
+	layer.views = projection_views.data();
+
+	XrCompositionLayerBaseHeader const *layers[]
+	    = { reinterpret_cast<XrCompositionLayerBaseHeader *>(&layer) };
+	XrFrameEndInfo end_info {};
+	end_info.type = XR_TYPE_FRAME_END_INFO;
+	end_info.next = nullptr;
+	end_info.displayTime = frame_state.predictedDisplayTime;
+	end_info.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+	end_info.layerCount = view_count > 0 ? 1 : 0;
+	end_info.layers = view_count > 0 ? layers : nullptr;
+	return XR_SUCCEEDED(xrEndFrame(m_openxr->session, &end_info));
+}
+
+auto Application::update_camera_from_xr_view(XrView const &view) -> void
+{
+	auto const &pose = view.pose;
+	smath::Vec3 position { pose.position.x, pose.position.y, pose.position.z };
+	auto forward
+	    = xr_rotate_vector(pose.orientation, smath::Vec3 { 0.0f, 0.0f, -1.0f });
+	auto up
+	    = xr_rotate_vector(pose.orientation, smath::Vec3 { 0.0f, 1.0f, 0.0f });
+	m_camera.position = position;
+	m_camera.target = position + forward;
+	m_camera.up = up;
+	m_camera.fovy = view.fov.angleUp - view.fov.angleDown;
+	m_cursor = PolarCoordinate::from_vec3(m_camera.target - m_camera.position);
+}
+
 auto Application::process_libinput_events() -> void
 {
 	if (!m_libinput)
@@ -1013,7 +1590,7 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 		}
 	}
 
-	if (m_backend == Backend::SDL && pressed && key == KEY_F11
+	if (m_backend == Backend::SDL && !m_openxr && pressed && key == KEY_F11
 	    && m_ctrl_pressed_count > 0) {
 		bool const new_show_imgui { !m_show_imgui };
 		m_show_imgui = new_show_imgui;
