@@ -479,6 +479,12 @@ struct OpenXrState {
 	PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device { nullptr };
 	PFN_xrGetVulkanGraphicsRequirements2KHR get_requirements2 { nullptr };
 	PFN_xrGetVulkanGraphicsRequirementsKHR get_requirements { nullptr };
+	bool hand_tracking_supported { false };
+	XrHandTrackerEXT left_hand_tracker { XR_NULL_HANDLE };
+	XrHandTrackerEXT right_hand_tracker { XR_NULL_HANDLE };
+	PFN_xrCreateHandTrackerEXT create_hand_tracker { nullptr };
+	PFN_xrDestroyHandTrackerEXT destroy_hand_tracker { nullptr };
+	PFN_xrLocateHandJointsEXT locate_hand_joints { nullptr };
 };
 
 Application::Application()
@@ -1012,6 +1018,10 @@ auto Application::run() -> void
 
 			gl.set_transform(view_projection);
 			gl.draw_sphere(m_camera.target, 0.01f);
+
+			if (m_openxr && m_openxr->hand_tracking_supported) {
+				render_hands(gl, view_projection);
+			}
 		};
 
 		if (xr_active) {
@@ -1145,6 +1155,13 @@ auto Application::init_openxr() -> void
 		m_openxr->use_vulkan_enable2 = true;
 	}
 
+	bool const has_hand_tracking
+	    = has_extension(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+	if (has_hand_tracking) {
+		extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+		m_openxr->hand_tracking_supported = true;
+	}
+
 	create_info.enabledExtensionCount
 	    = static_cast<uint32_t>(extensions.size());
 	create_info.enabledExtensionNames = extensions.data();
@@ -1273,6 +1290,35 @@ auto Application::init_openxr() -> void
 		if (XR_FAILED(requirements_result) || !m_openxr->get_requirements) {
 			m_logger.warn("OpenXR missing Vulkan requirements hook");
 			m_openxr->get_requirements = nullptr;
+		}
+	}
+
+	if (m_openxr->hand_tracking_supported) {
+		auto create_result = xrGetInstanceProcAddr(m_openxr->instance,
+		    "xrCreateHandTrackerEXT",
+		    reinterpret_cast<PFN_xrVoidFunction *>(
+		        &m_openxr->create_hand_tracker));
+		if (XR_FAILED(create_result) || !m_openxr->create_hand_tracker) {
+			m_logger.warn("OpenXR hand tracking create function unavailable");
+			m_openxr->hand_tracking_supported = false;
+		}
+
+		auto destroy_result = xrGetInstanceProcAddr(m_openxr->instance,
+		    "xrDestroyHandTrackerEXT",
+		    reinterpret_cast<PFN_xrVoidFunction *>(
+		        &m_openxr->destroy_hand_tracker));
+		if (XR_FAILED(destroy_result) || !m_openxr->destroy_hand_tracker) {
+			m_logger.warn("OpenXR hand tracking destroy function unavailable");
+			m_openxr->hand_tracking_supported = false;
+		}
+
+		auto locate_result
+		    = xrGetInstanceProcAddr(m_openxr->instance, "xrLocateHandJointsEXT",
+		        reinterpret_cast<PFN_xrVoidFunction *>(
+		            &m_openxr->locate_hand_joints));
+		if (XR_FAILED(locate_result) || !m_openxr->locate_hand_joints) {
+			m_logger.warn("OpenXR hand tracking locate function unavailable");
+			m_openxr->hand_tracking_supported = false;
 		}
 	}
 
@@ -1531,6 +1577,33 @@ auto Application::init_openxr_session() -> void
 	if (!m_openxr->swapchains.empty()) {
 		m_renderer->set_offscreen_extent(m_openxr->swapchains.front().extent);
 	}
+
+	if (m_openxr->hand_tracking_supported && m_openxr->create_hand_tracker) {
+		XrHandTrackerCreateInfoEXT left_info {};
+		left_info.type = XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT;
+		left_info.next = nullptr;
+		left_info.hand = XR_HAND_LEFT_EXT;
+		left_info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+		auto left_result = m_openxr->create_hand_tracker(
+		    m_openxr->session, &left_info, &m_openxr->left_hand_tracker);
+		if (XR_FAILED(left_result)) {
+			m_logger.warn("Failed to create left hand tracker");
+			m_openxr->left_hand_tracker = XR_NULL_HANDLE;
+		}
+
+		XrHandTrackerCreateInfoEXT right_info {};
+		right_info.type = XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT;
+		right_info.next = nullptr;
+		right_info.hand = XR_HAND_RIGHT_EXT;
+		right_info.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+		auto right_result = m_openxr->create_hand_tracker(
+		    m_openxr->session, &right_info, &m_openxr->right_hand_tracker);
+		if (XR_FAILED(right_result)) {
+			m_logger.warn("Failed to create right hand tracker");
+			m_openxr->right_hand_tracker = XR_NULL_HANDLE;
+		}
+	}
+
 	m_logger.info("OpenXR session initialized");
 }
 
@@ -1547,6 +1620,18 @@ auto Application::shutdown_openxr() -> void
 		}
 	}
 	m_openxr->swapchains.clear();
+
+	if (m_openxr->left_hand_tracker != XR_NULL_HANDLE
+	    && m_openxr->destroy_hand_tracker) {
+		m_openxr->destroy_hand_tracker(m_openxr->left_hand_tracker);
+		m_openxr->left_hand_tracker = XR_NULL_HANDLE;
+	}
+
+	if (m_openxr->right_hand_tracker != XR_NULL_HANDLE
+	    && m_openxr->destroy_hand_tracker) {
+		m_openxr->destroy_hand_tracker(m_openxr->right_hand_tracker);
+		m_openxr->right_hand_tracker = XR_NULL_HANDLE;
+	}
 
 	if (m_openxr->app_space != XR_NULL_HANDLE) {
 		xrDestroySpace(m_openxr->app_space);
@@ -1666,6 +1751,8 @@ auto Application::render_openxr_frame(
 		return false;
 	}
 
+	update_hands(frame_state.predictedDisplayTime);
+
 	std::vector<XrCompositionLayerProjectionView> projection_views(view_count);
 	for (auto &projection_view : projection_views) {
 		projection_view = XrCompositionLayerProjectionView {};
@@ -1744,6 +1831,106 @@ auto Application::update_camera_from_xr_view(XrView const &view) -> void
 	m_camera.up = up;
 	m_camera.fovy = view.fov.angleUp - view.fov.angleDown;
 	m_cursor = PolarCoordinate::from_vec3(m_camera.target - m_camera.position);
+}
+
+auto Application::update_hands(XrTime display_time) -> void
+{
+	if (!m_openxr || !m_openxr->hand_tracking_supported) {
+		m_left_hand_valid = false;
+		m_right_hand_valid = false;
+		return;
+	}
+
+	if (m_openxr->left_hand_tracker != XR_NULL_HANDLE
+	    && m_openxr->locate_hand_joints) {
+		XrHandJointsLocateInfoEXT locate_info {};
+		locate_info.type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT;
+		locate_info.next = nullptr;
+		locate_info.baseSpace = m_openxr->app_space;
+		locate_info.time = display_time;
+
+		XrHandJointLocationEXT locations[XR_HAND_JOINT_COUNT_EXT];
+		XrHandJointLocationsEXT locations_info {};
+		locations_info.type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT;
+		locations_info.next = nullptr;
+		locations_info.jointCount = XR_HAND_JOINT_COUNT_EXT;
+		locations_info.jointLocations = locations;
+
+		if (XR_SUCCEEDED(m_openxr->locate_hand_joints(
+		        m_openxr->left_hand_tracker, &locate_info, &locations_info))) {
+			m_left_hand_valid = (locations[0].locationFlags
+			                        & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+			    != 0;
+			if (m_left_hand_valid) {
+				for (uint32_t j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+					m_left_joints[j]
+					    = smath::Vec3 { locations[j].pose.position.x,
+						      locations[j].pose.position.y,
+						      locations[j].pose.position.z };
+				}
+			}
+		} else {
+			m_left_hand_valid = false;
+		}
+	}
+
+	if (m_openxr->right_hand_tracker != XR_NULL_HANDLE
+	    && m_openxr->locate_hand_joints) {
+		XrHandJointsLocateInfoEXT locate_info {};
+		locate_info.type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT;
+		locate_info.next = nullptr;
+		locate_info.baseSpace = m_openxr->app_space;
+		locate_info.time = display_time;
+
+		XrHandJointLocationEXT locations[XR_HAND_JOINT_COUNT_EXT];
+		XrHandJointLocationsEXT locations_info {};
+		locations_info.type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT;
+		locations_info.next = nullptr;
+		locations_info.jointCount = XR_HAND_JOINT_COUNT_EXT;
+		locations_info.jointLocations = locations;
+
+		if (XR_SUCCEEDED(m_openxr->locate_hand_joints(
+		        m_openxr->right_hand_tracker, &locate_info, &locations_info))) {
+			m_right_hand_valid = (locations[0].locationFlags
+			                         & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+			    != 0;
+			if (m_right_hand_valid) {
+				for (uint32_t j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+					m_right_joints[j]
+					    = smath::Vec3 { locations[j].pose.position.x,
+						      locations[j].pose.position.y,
+						      locations[j].pose.position.z };
+				}
+			}
+		} else {
+			m_right_hand_valid = false;
+		}
+	}
+}
+
+auto Application::render_hands(
+    VulkanRenderer::GL &gl, smath::Mat4 const &view_projection) -> void
+{
+	gl.set_texture(&m_renderer->white_texture());
+	float const radius = 0.005f;
+
+	if (m_left_hand_valid) {
+		for (uint32_t j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+			smath::Vec3 const &pos = m_left_joints[j];
+			gl.set_transform(view_projection * smath::translate(pos));
+			gl.draw_sphere(smath::Vec3 { 0.0f, 0.0f, 0.0f }, radius, 8, 16,
+			    smath::Vec4 { 1.0f, 0.0f, 0.0f, 1.0f });
+		}
+	}
+
+	if (m_right_hand_valid) {
+		for (uint32_t j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+			smath::Vec3 const &pos = m_right_joints[j];
+			gl.set_transform(view_projection * smath::translate(pos));
+			gl.draw_sphere(smath::Vec3 { 0.0f, 0.0f, 0.0f }, radius, 8, 16,
+			    smath::Vec4 { 1.0f, 0.0f, 0.0f, 1.0f });
+		}
+	}
 }
 
 auto Application::process_libinput_events() -> void

@@ -13,6 +13,8 @@
 #include <linux/input-event-codes.h>
 #include <openxr/openxr.h>
 
+#include "smath.hpp"
+
 #include "Loader.h"
 #include "Logger.h"
 #include "Skybox.h"
@@ -73,6 +75,9 @@ private:
 	    std::function<void(VulkanRenderer::GL &)> const &record,
 	    float dt_seconds) -> bool;
 	auto update_camera_from_xr_view(XrView const &view) -> void;
+	auto update_hands(XrTime display_time) -> void;
+	auto render_hands(
+	    VulkanRenderer::GL &gl, smath::Mat4 const &view_projection) -> void;
 
 	SDL_Window *m_window { nullptr };
 	Backend m_backend { Backend::SDL };
@@ -104,6 +109,13 @@ private:
 
 	Camera m_camera;
 	PolarCoordinate m_cursor;
+
+	static inline std::array<smath::Vec3, XR_HAND_JOINT_COUNT_EXT>
+	    m_left_joints {};
+	static inline std::array<smath::Vec3, XR_HAND_JOINT_COUNT_EXT>
+	    m_right_joints {};
+	static inline bool m_left_hand_valid { false };
+	static inline bool m_right_hand_valid { false };
 };
 
 } // namespace Lunar

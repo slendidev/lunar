@@ -426,37 +426,66 @@ auto VulkanRenderer::GL::draw_sphere(smath::Vec3 center, float radius,
 	if (sphere_color.has_value())
 		color(*sphere_color);
 
+	begin(GeometryKind::Triangles);
+
 	for (int y = 0; y < rings; y++) {
-		float const v = static_cast<float>(y + 1) / static_cast<float>(rings);
+		float const v1 = static_cast<float>(y) / static_cast<float>(rings);
+		float const v2 = static_cast<float>(y + 1) / static_cast<float>(rings);
 
-		float const theta = v * pi;
+		float const theta1 = v1 * pi;
+		float const theta2 = v2 * pi;
 
-		float const s = std::sin(theta);
-		float const c = std::cos(theta);
+		float const s1 = std::sin(theta1);
+		float const c1 = std::cos(theta1);
+		float const s2 = std::sin(theta2);
+		float const c2 = std::cos(theta2);
 
-		begin(GeometryKind::TriangleStrip);
-
-		for (int x = 0; x <= segments; x++) {
-			float const u
+		for (int x = 0; x < segments; x++) {
+			float const u1
 			    = static_cast<float>(x) / static_cast<float>(segments);
-			float const phi = u * (2.0f * pi);
+			float const u2
+			    = static_cast<float>(x + 1) / static_cast<float>(segments);
 
-			float const sp = std::sin(phi);
-			float const cp = std::cos(phi);
+			float const phi1 = u1 * (2.0f * pi);
+			float const phi2 = u2 * (2.0f * pi);
 
-			// Vertex on ring y+1
-			{
-				smath::Vec3 n { s * cp, c, s * sp };
-				normal(n);
-				uv(smath::Vec2 { u, 1.0f - v });
+			float const sp1 = std::sin(phi1);
+			float const cp1 = std::cos(phi1);
+			float const sp2 = std::sin(phi2);
+			float const cp2 = std::cos(phi2);
 
-				smath::Vec3 p { center + n * radius };
-				vert(p);
-			}
+			smath::Vec3 n1 { s1 * cp1, c1, s1 * sp1 };
+			smath::Vec3 n2 { s1 * cp2, c1, s1 * sp2 };
+			smath::Vec3 n3 { s2 * cp1, c2, s2 * sp1 };
+			smath::Vec3 n4 { s2 * cp2, c2, s2 * sp2 };
+
+			normal(n1);
+			uv(smath::Vec2 { u1, 1.0f - v1 });
+			vert(center + n1 * radius);
+
+			normal(n2);
+			uv(smath::Vec2 { u2, 1.0f - v1 });
+			vert(center + n2 * radius);
+
+			normal(n3);
+			uv(smath::Vec2 { u1, 1.0f - v2 });
+			vert(center + n3 * radius);
+
+			normal(n2);
+			uv(smath::Vec2 { u2, 1.0f - v1 });
+			vert(center + n2 * radius);
+
+			normal(n4);
+			uv(smath::Vec2 { u2, 1.0f - v2 });
+			vert(center + n4 * radius);
+
+			normal(n3);
+			uv(smath::Vec2 { u1, 1.0f - v2 });
+			vert(center + n3 * radius);
 		}
-
-		end();
 	}
+
+	end();
 }
 
 auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
