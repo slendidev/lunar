@@ -1137,14 +1137,12 @@ auto Application::init_openxr() -> void
 	}
 
 	std::vector<char const *> extensions {};
-	if (has_enable2) {
-		extensions.push_back(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
-		m_openxr->use_vulkan_enable2 = true;
-	} else {
-		m_openxr->use_vulkan_enable2 = false;
-	}
 	if (has_enable1) {
 		extensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+		m_openxr->use_vulkan_enable2 = false;
+	} else if (has_enable2) {
+		extensions.push_back(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+		m_openxr->use_vulkan_enable2 = true;
 	}
 
 	create_info.enabledExtensionCount
@@ -1459,10 +1457,10 @@ auto Application::init_openxr_session() -> void
 	}
 
 	std::array<int64_t, 4> const preferred_formats {
-		static_cast<int64_t>(VK_FORMAT_B8G8R8A8_SRGB),
 		static_cast<int64_t>(VK_FORMAT_B8G8R8A8_UNORM),
-		static_cast<int64_t>(VK_FORMAT_R8G8B8A8_SRGB),
+		static_cast<int64_t>(VK_FORMAT_B8G8R8A8_SRGB),
 		static_cast<int64_t>(VK_FORMAT_R8G8B8A8_UNORM),
+		static_cast<int64_t>(VK_FORMAT_R8G8B8A8_SRGB),
 	};
 	m_openxr->color_format = formats.front();
 	for (auto const preferred : preferred_formats) {
