@@ -439,6 +439,14 @@ auto xr_rotate_vector(XrQuaternionf q, smath::Vec3 v) -> smath::Vec3
 	return (u * (2.0f * dot)) + (v * (s * s - u_dot)) + (cross * (2.0f * s));
 }
 
+[[maybe_unused]] auto xr_result_to_string(XrInstance instance, XrResult result)
+    -> std::string
+{
+	std::array<char, XR_MAX_RESULT_STRING_SIZE> buffer {};
+	xrResultToString(instance, result, buffer.data());
+	return std::string { buffer.data() };
+}
+
 } // namespace
 
 namespace Lunar {
@@ -452,6 +460,7 @@ struct OpenXrSwapchain {
 struct OpenXrState {
 	bool enabled { false };
 	bool session_running { false };
+	bool use_vulkan_enable2 { false };
 	XrInstance instance { XR_NULL_HANDLE };
 	XrSystemId system_id { XR_NULL_SYSTEM_ID };
 	XrSession session { XR_NULL_HANDLE };
@@ -466,7 +475,10 @@ struct OpenXrState {
 	std::vector<OpenXrSwapchain> swapchains {};
 	std::vector<std::string> instance_extensions {};
 	std::vector<std::string> device_extensions {};
-	PFN_xrGetVulkanGraphicsDevice2KHR get_graphics_device { nullptr };
+	PFN_xrGetVulkanGraphicsDevice2KHR get_graphics_device2 { nullptr };
+	PFN_xrGetVulkanGraphicsDeviceKHR get_graphics_device { nullptr };
+	PFN_xrGetVulkanGraphicsRequirements2KHR get_requirements2 { nullptr };
+	PFN_xrGetVulkanGraphicsRequirementsKHR get_requirements { nullptr };
 };
 
 Application::Application()
@@ -939,25 +951,61 @@ auto Application::run() -> void
 			auto view { smath::matrix_look_at(
 				m_camera.position, m_camera.target, m_camera.up) };
 			auto const draw_extent = m_renderer->draw_extent();
-			auto const aspect = static_cast<float>(draw_extent.width)
-			    / static_cast<float>(draw_extent.height);
-			auto const proj = smath::matrix_perspective(
-			    m_camera.fovy, aspect, 0.1f, 10000.0f);
-			auto const view_projection = proj * view;
-			gl.set_transform(view_projection);
-			for (auto const &mesh : m_test_meshes) {
-				for (auto const &surface : mesh->surfaces) {
-					gl.draw_mesh(mesh->mesh_buffers, smath::Mat4::identity(),
-					    surface.count, surface.start_index);
-				}
-			}
-			m_skybox.draw(gl, *m_renderer, view_projection);
+			auto const aspect = draw_extent.height == 0
+			    ? 1.0f
+			    : static_cast<float>(draw_extent.width)
+			        / static_cast<float>(draw_extent.height);
+			auto projection { smath::matrix_perspective(
+				m_camera.fovy, aspect, 0.1f, 10000.0f) };
+			projection[1][1] *= -1;
+			auto view_projection { projection * view };
+
+			auto skybox_view { view };
+			skybox_view[3][0] = 0.0f;
+			skybox_view[3][1] = 0.0f;
+			skybox_view[3][2] = 0.0f;
+			m_skybox.draw(gl, *m_renderer, projection * skybox_view);
 
 			gl.set_transform(view_projection);
-			gl.draw_sphere({ 0.0f, 0.0f, 0.0f }, 0.1f, 16, 32,
-			    smath::Vec4 { Colors::RED, 1.0f });
-			gl.draw_sphere({ 0.0f, 0.0f, 0.0f }, 0.11f, 16, 32,
-			    smath::Vec4 { Colors::DARK_RED, 1.0f });
+			gl.set_texture();
+			auto const &meshes { m_test_meshes };
+			if (meshes.size() > 2 && !meshes[2]->surfaces.empty()) {
+				auto const &surface = meshes[2]->surfaces[0];
+				gl.draw_mesh(meshes[2]->mesh_buffers,
+				    view_projection
+				        * smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
+				    surface.count, surface.start_index);
+			}
+
+			gl.push_transform();
+			gl.set_transform(view_projection
+			    * smath::translate(smath::Vec3 { 0.0f, 0.0f, 5.0f })
+			    * smath::Quaternion<float>::from_axis_angle(
+			        smath::Vec3 { 0.0f, 1.0f, 0.0f }, smath::deg(180))
+			        .as_matrix());
+
+			gl.set_texture(&m_renderer->white_texture());
+
+			gl.begin(VulkanRenderer::GL::GeometryKind::Quads);
+
+			gl.color(smath::Vec3 { 0.0f, 0.0f, 0.0f });
+			gl.uv(smath::Vec2 { 1.0f, 1.0f });
+			gl.vert(smath::Vec3 { 0.5f, -0.5f, 0.0f });
+
+			gl.color(smath::Vec3 { 0.5f, 0.5f, 0.5f });
+			gl.uv(smath::Vec2 { 1.0f, 0.0f });
+			gl.vert(smath::Vec3 { 0.5f, 0.5f, 0.0f });
+
+			gl.color(smath::Vec3 { 1.0f, 0.0f, 0.0f });
+			gl.uv(smath::Vec2 { 0.0f, 1.0f });
+			gl.vert(smath::Vec3 { -0.5f, -0.5f, 0.0f });
+
+			gl.color(smath::Vec3 { 0.0f, 1.0f, 0.0f });
+			gl.uv(smath::Vec2 { 0.0f, 0.0f });
+			gl.vert(smath::Vec3 { -0.5f, 0.5f, 0.0f });
+
+			gl.end();
+
 			gl.draw_rectangle({ -0.5f, 0.5f }, { 0.5f, 0.5f });
 			gl.draw_rectangle(
 			    { 0, 0.5f }, { 0.5f, 0.5f }, { Colors::TEAL, 1.0f });
@@ -1031,6 +1079,9 @@ auto Application::shutdown_input() -> void
 
 auto Application::init_openxr() -> void
 {
+	if (auto const *no_xr = getenv("LUNAR_NO_XR"); no_xr) {
+		return;
+	}
 	m_openxr = std::make_unique<OpenXrState>();
 
 	XrInstanceCreateInfo create_info {};
@@ -1044,9 +1095,58 @@ auto Application::init_openxr() -> void
 	create_info.applicationInfo.engineVersion = 1;
 	create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
 
-	std::array<char const *, 1> const extensions {
-		XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
+	uint32_t extension_count = 0;
+	auto extension_count_result = xrEnumerateInstanceExtensionProperties(
+	    nullptr, 0, &extension_count, nullptr);
+	if (XR_FAILED(extension_count_result) || extension_count == 0) {
+		m_logger.warn("OpenXR instance extensions unavailable: {}",
+		    xr_result_to_string(XR_NULL_HANDLE, extension_count_result));
+		m_openxr.reset();
+		return;
+	}
+
+	std::vector<XrExtensionProperties> available_extensions(extension_count);
+	for (auto &extension : available_extensions) {
+		extension = XrExtensionProperties {};
+		extension.type = XR_TYPE_EXTENSION_PROPERTIES;
+		extension.next = nullptr;
+	}
+	auto enumerate_result = xrEnumerateInstanceExtensionProperties(nullptr,
+	    extension_count, &extension_count, available_extensions.data());
+	if (XR_FAILED(enumerate_result)) {
+		m_logger.warn("Failed to enumerate OpenXR extensions: {}",
+		    xr_result_to_string(XR_NULL_HANDLE, enumerate_result));
+		m_openxr.reset();
+		return;
+	}
+
+	auto has_extension = [&](char const *name) {
+		return std::any_of(available_extensions.begin(),
+		    available_extensions.end(), [&](auto const &extension) {
+			    return std::strcmp(extension.extensionName, name) == 0;
+		    });
 	};
+
+	bool const has_enable2
+	    = has_extension(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+	bool const has_enable1 = has_extension(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+	if (!has_enable2 && !has_enable1) {
+		m_logger.warn("OpenXR Vulkan extensions missing");
+		m_openxr.reset();
+		return;
+	}
+
+	std::vector<char const *> extensions {};
+	if (has_enable2) {
+		extensions.push_back(XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME);
+		m_openxr->use_vulkan_enable2 = true;
+	} else {
+		m_openxr->use_vulkan_enable2 = false;
+	}
+	if (has_enable1) {
+		extensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
+	}
+
 	create_info.enabledExtensionCount
 	    = static_cast<uint32_t>(extensions.size());
 	create_info.enabledExtensionNames = extensions.data();
@@ -1077,7 +1177,7 @@ auto Application::init_openxr() -> void
 	    "xrGetVulkanInstanceExtensionsKHR",
 	    reinterpret_cast<PFN_xrVoidFunction *>(&get_instance_exts));
 	if (XR_FAILED(instance_ext_result) || !get_instance_exts) {
-		m_logger.warn("OpenXR missing Vulkan instance extensions");
+		m_logger.warn("OpenXR missing Vulkan instance extensions (proc)");
 		xrDestroyInstance(m_openxr->instance);
 		m_openxr.reset();
 		return;
@@ -1138,12 +1238,44 @@ auto Application::init_openxr() -> void
 	    = split_extension_list(std::string_view { device_ext_string.c_str() });
 	m_openxr->enabled = true;
 
-	auto graphics_device_result = xrGetInstanceProcAddr(m_openxr->instance,
-	    "xrGetVulkanGraphicsDevice2KHR",
-	    reinterpret_cast<PFN_xrVoidFunction *>(&m_openxr->get_graphics_device));
-	if (XR_FAILED(graphics_device_result) || !m_openxr->get_graphics_device) {
-		m_logger.warn("OpenXR missing Vulkan graphics device hook");
-		m_openxr->get_graphics_device = nullptr;
+	if (m_openxr->use_vulkan_enable2) {
+		auto graphics_device_result = xrGetInstanceProcAddr(m_openxr->instance,
+		    "xrGetVulkanGraphicsDevice2KHR",
+		    reinterpret_cast<PFN_xrVoidFunction *>(
+		        &m_openxr->get_graphics_device2));
+		if (XR_FAILED(graphics_device_result)
+		    || !m_openxr->get_graphics_device2) {
+			m_logger.warn("OpenXR missing Vulkan graphics device hook");
+			m_openxr->get_graphics_device2 = nullptr;
+		}
+
+		auto requirements_result = xrGetInstanceProcAddr(m_openxr->instance,
+		    "xrGetVulkanGraphicsRequirements2KHR",
+		    reinterpret_cast<PFN_xrVoidFunction *>(
+		        &m_openxr->get_requirements2));
+		if (XR_FAILED(requirements_result) || !m_openxr->get_requirements2) {
+			m_logger.warn("OpenXR missing Vulkan requirements hook");
+			m_openxr->get_requirements2 = nullptr;
+		}
+	} else {
+		auto graphics_device_result = xrGetInstanceProcAddr(m_openxr->instance,
+		    "xrGetVulkanGraphicsDeviceKHR",
+		    reinterpret_cast<PFN_xrVoidFunction *>(
+		        &m_openxr->get_graphics_device));
+		if (XR_FAILED(graphics_device_result)
+		    || !m_openxr->get_graphics_device) {
+			m_logger.warn("OpenXR missing Vulkan graphics device hook");
+			m_openxr->get_graphics_device = nullptr;
+		}
+
+		auto requirements_result = xrGetInstanceProcAddr(m_openxr->instance,
+		    "xrGetVulkanGraphicsRequirementsKHR",
+		    reinterpret_cast<PFN_xrVoidFunction *>(
+		        &m_openxr->get_requirements));
+		if (XR_FAILED(requirements_result) || !m_openxr->get_requirements) {
+			m_logger.warn("OpenXR missing Vulkan requirements hook");
+			m_openxr->get_requirements = nullptr;
+		}
 	}
 
 	m_logger.info("OpenXR system detected");
@@ -1154,25 +1286,93 @@ auto Application::init_openxr_session() -> void
 	if (!m_openxr || !m_renderer) {
 		return;
 	}
-	if (!m_openxr->get_graphics_device) {
-		m_logger.warn("OpenXR graphics device hook unavailable");
-		shutdown_openxr();
-		return;
-	}
-
-	XrVulkanGraphicsDeviceGetInfoKHR device_info {};
-	device_info.type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR;
-	device_info.next = nullptr;
-	device_info.systemId = m_openxr->system_id;
-	device_info.vulkanInstance
-	    = static_cast<VkInstance>(m_renderer->instance());
 	VkPhysicalDevice xr_physical_device {};
-	auto const phys_result = m_openxr->get_graphics_device(
-	    m_openxr->instance, &device_info, &xr_physical_device);
-	if (XR_FAILED(phys_result)) {
-		m_logger.warn("Failed to fetch OpenXR Vulkan device");
-		shutdown_openxr();
-		return;
+	XrGraphicsBindingVulkan2KHR binding2 {};
+	XrGraphicsBindingVulkanKHR binding1 {};
+	void *binding_ptr = nullptr;
+
+	if (m_openxr->use_vulkan_enable2) {
+		if (!m_openxr->get_graphics_device2 || !m_openxr->get_requirements2) {
+			m_logger.warn("OpenXR graphics device hook unavailable");
+			shutdown_openxr();
+			return;
+		}
+
+		XrGraphicsRequirementsVulkan2KHR requirements {};
+		requirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN2_KHR;
+		requirements.next = nullptr;
+		auto const requirements_result = m_openxr->get_requirements2(
+		    m_openxr->instance, m_openxr->system_id, &requirements);
+		if (XR_FAILED(requirements_result)) {
+			m_logger.warn("OpenXR Vulkan requirements failed: {}",
+			    xr_result_to_string(m_openxr->instance, requirements_result));
+			shutdown_openxr();
+			return;
+		}
+
+		XrVulkanGraphicsDeviceGetInfoKHR device_info {};
+		device_info.type = XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR;
+		device_info.next = nullptr;
+		device_info.systemId = m_openxr->system_id;
+		device_info.vulkanInstance
+		    = static_cast<VkInstance>(m_renderer->instance());
+		auto const phys_result = m_openxr->get_graphics_device2(
+		    m_openxr->instance, &device_info, &xr_physical_device);
+		if (XR_FAILED(phys_result)) {
+			m_logger.warn("Failed to fetch OpenXR Vulkan device: {}",
+			    xr_result_to_string(m_openxr->instance, phys_result));
+			shutdown_openxr();
+			return;
+		}
+
+		binding2.type = XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR;
+		binding2.next = nullptr;
+		binding2.instance = static_cast<VkInstance>(m_renderer->instance());
+		binding2.physicalDevice
+		    = static_cast<VkPhysicalDevice>(m_renderer->physical_device());
+		binding2.device = static_cast<VkDevice>(m_renderer->device());
+		binding2.queueFamilyIndex = m_renderer->graphics_queue_family();
+		binding2.queueIndex = 0;
+		binding_ptr = &binding2;
+	} else {
+		if (!m_openxr->get_graphics_device || !m_openxr->get_requirements) {
+			m_logger.warn("OpenXR graphics device hook unavailable");
+			shutdown_openxr();
+			return;
+		}
+
+		XrGraphicsRequirementsVulkanKHR requirements {};
+		requirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR;
+		requirements.next = nullptr;
+		auto const requirements_result = m_openxr->get_requirements(
+		    m_openxr->instance, m_openxr->system_id, &requirements);
+		if (XR_FAILED(requirements_result)) {
+			m_logger.warn("OpenXR Vulkan requirements failed: {}",
+			    xr_result_to_string(m_openxr->instance, requirements_result));
+			shutdown_openxr();
+			return;
+		}
+
+		auto const phys_result = m_openxr->get_graphics_device(
+		    m_openxr->instance, m_openxr->system_id,
+		    static_cast<VkInstance>(m_renderer->instance()),
+		    &xr_physical_device);
+		if (XR_FAILED(phys_result)) {
+			m_logger.warn("Failed to fetch OpenXR Vulkan device: {}",
+			    xr_result_to_string(m_openxr->instance, phys_result));
+			shutdown_openxr();
+			return;
+		}
+
+		binding1.type = XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR;
+		binding1.next = nullptr;
+		binding1.instance = static_cast<VkInstance>(m_renderer->instance());
+		binding1.physicalDevice
+		    = static_cast<VkPhysicalDevice>(m_renderer->physical_device());
+		binding1.device = static_cast<VkDevice>(m_renderer->device());
+		binding1.queueFamilyIndex = m_renderer->graphics_queue_family();
+		binding1.queueIndex = 0;
+		binding_ptr = &binding1;
 	}
 
 	if (xr_physical_device
@@ -1180,24 +1380,15 @@ auto Application::init_openxr_session() -> void
 		m_logger.warn("OpenXR device differs from selected Vulkan device");
 	}
 
-	XrGraphicsBindingVulkan2KHR binding {};
-	binding.type = XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR;
-	binding.next = nullptr;
-	binding.instance = static_cast<VkInstance>(m_renderer->instance());
-	binding.physicalDevice
-	    = static_cast<VkPhysicalDevice>(m_renderer->physical_device());
-	binding.device = static_cast<VkDevice>(m_renderer->device());
-	binding.queueFamilyIndex = m_renderer->graphics_queue_family();
-	binding.queueIndex = 0;
-
 	XrSessionCreateInfo session_info {};
 	session_info.type = XR_TYPE_SESSION_CREATE_INFO;
-	session_info.next = &binding;
+	session_info.next = binding_ptr;
 	session_info.systemId = m_openxr->system_id;
 	auto const session_result = xrCreateSession(
 	    m_openxr->instance, &session_info, &m_openxr->session);
 	if (XR_FAILED(session_result)) {
-		m_logger.warn("Failed to create OpenXR session");
+		m_logger.warn("Failed to create OpenXR session: {}",
+		    xr_result_to_string(m_openxr->instance, session_result));
 		shutdown_openxr();
 		return;
 	}
@@ -1210,7 +1401,8 @@ auto Application::init_openxr_session() -> void
 	auto const space_result = xrCreateReferenceSpace(
 	    m_openxr->session, &space_info, &m_openxr->app_space);
 	if (XR_FAILED(space_result)) {
-		m_logger.warn("Failed to create OpenXR space");
+		m_logger.warn("Failed to create OpenXR space: {}",
+		    xr_result_to_string(m_openxr->instance, space_result));
 		shutdown_openxr();
 		return;
 	}
@@ -1220,7 +1412,8 @@ auto Application::init_openxr_session() -> void
 	    = xrEnumerateViewConfigurationViews(m_openxr->instance,
 	        m_openxr->system_id, m_openxr->view_type, 0, &view_count, nullptr);
 	if (XR_FAILED(view_count_result) || view_count == 0) {
-		m_logger.warn("OpenXR view configuration missing");
+		m_logger.warn("OpenXR view configuration missing: {}",
+		    xr_result_to_string(m_openxr->instance, view_count_result));
 		shutdown_openxr();
 		return;
 	}
@@ -1234,7 +1427,8 @@ auto Application::init_openxr_session() -> void
 	    m_openxr->instance, m_openxr->system_id, m_openxr->view_type,
 	    view_count, &view_count, m_openxr->view_configs.data());
 	if (XR_FAILED(view_result)) {
-		m_logger.warn("Failed to enumerate OpenXR views");
+		m_logger.warn("Failed to enumerate OpenXR views: {}",
+		    xr_result_to_string(m_openxr->instance, view_result));
 		shutdown_openxr();
 		return;
 	}
@@ -1249,7 +1443,8 @@ auto Application::init_openxr_session() -> void
 	auto const format_count_result = xrEnumerateSwapchainFormats(
 	    m_openxr->session, 0, &format_count, nullptr);
 	if (XR_FAILED(format_count_result) || format_count == 0) {
-		m_logger.warn("OpenXR swapchain formats unavailable");
+		m_logger.warn("OpenXR swapchain formats unavailable: {}",
+		    xr_result_to_string(m_openxr->instance, format_count_result));
 		shutdown_openxr();
 		return;
 	}
@@ -1257,7 +1452,8 @@ auto Application::init_openxr_session() -> void
 	auto const format_result = xrEnumerateSwapchainFormats(
 	    m_openxr->session, format_count, &format_count, formats.data());
 	if (XR_FAILED(format_result)) {
-		m_logger.warn("Failed to enumerate OpenXR swapchain formats");
+		m_logger.warn("Failed to enumerate OpenXR swapchain formats: {}",
+		    xr_result_to_string(m_openxr->instance, format_result));
 		shutdown_openxr();
 		return;
 	}
@@ -1298,7 +1494,8 @@ auto Application::init_openxr_session() -> void
 		auto const swapchain_result = xrCreateSwapchain(m_openxr->session,
 		    &swapchain_info, &m_openxr->swapchains[i].handle);
 		if (XR_FAILED(swapchain_result)) {
-			m_logger.warn("Failed to create OpenXR swapchain");
+			m_logger.warn("Failed to create OpenXR swapchain: {}",
+			    xr_result_to_string(m_openxr->instance, swapchain_result));
 			shutdown_openxr();
 			return;
 		}
@@ -1310,7 +1507,8 @@ auto Application::init_openxr_session() -> void
 		auto const image_count_result = xrEnumerateSwapchainImages(
 		    m_openxr->swapchains[i].handle, 0, &image_count, nullptr);
 		if (XR_FAILED(image_count_result) || image_count == 0) {
-			m_logger.warn("Failed to enumerate OpenXR swapchain images");
+			m_logger.warn("Failed to enumerate OpenXR swapchain images: {}",
+			    xr_result_to_string(m_openxr->instance, image_count_result));
 			shutdown_openxr();
 			return;
 		}
@@ -1325,7 +1523,8 @@ auto Application::init_openxr_session() -> void
 		    reinterpret_cast<XrSwapchainImageBaseHeader *>(
 		        m_openxr->swapchains[i].images.data()));
 		if (XR_FAILED(image_result)) {
-			m_logger.warn("Failed to read OpenXR swapchain images");
+			m_logger.warn("Failed to read OpenXR swapchain images: {}",
+			    xr_result_to_string(m_openxr->instance, image_result));
 			shutdown_openxr();
 			return;
 		}

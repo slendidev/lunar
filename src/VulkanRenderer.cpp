@@ -1097,13 +1097,17 @@ auto VulkanRenderer::vk_init() -> void
 		VK_KHR_COPY_COMMANDS_2_EXTENSION_NAME,
 		VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
 	};
+	std::vector<char const *> required_extensions {};
 	for (auto const &extension : m_extra_device_extensions) {
-		desired_extensions.push_back(extension.c_str());
+		required_extensions.push_back(extension.c_str());
 	}
 	phys_device_selector.set_surface(m_vk.surface)
 	    .add_desired_extensions(desired_extensions)
 	    .set_required_features_13(features_13)
 	    .add_required_extension_features(buffer_device_address_features);
+	if (!required_extensions.empty()) {
+		phys_device_selector.add_required_extensions(required_extensions);
+	}
 	auto physical_device_selector_return { phys_device_selector.select() };
 	if (!physical_device_selector_return) {
 		std::println(std::cerr,
