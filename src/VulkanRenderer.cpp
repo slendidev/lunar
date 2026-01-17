@@ -939,18 +939,34 @@ auto VulkanRenderer::setup_kms_surface() -> void
 		throw std::runtime_error("App init fail");
 	}
 
+	m_logger.info("Found {} Vulkan physical device(s)", devices.size());
+
 	for (auto const &device : devices) {
+		auto const props = device.getProperties();
+		m_logger.info("Checking device: {}", std::string(props.deviceName));
+
 		auto const displays = device.getDisplayPropertiesKHR();
 		if (displays.empty()) {
+			m_logger.info("  Device has no display properties");
 			continue;
 		}
 
+		m_logger.info("  Device has {} display(s)", displays.size());
+
 		for (auto const &display_props : displays) {
+			m_logger.info("  Checking display: {}",
+			    display_props.displayName
+			        ? std::string(display_props.displayName)
+			        : "(unnamed)");
+
 			auto const modes
 			    = device.getDisplayModePropertiesKHR(display_props.display);
 			if (modes.empty()) {
+				m_logger.info("    Display has no modes");
 				continue;
 			}
+
+			m_logger.info("    Display has {} mode(s)", modes.size());
 
 			auto const best_mode_it = std::max_element(modes.begin(),
 			    modes.end(), [](auto const &lhs, auto const &rhs) {
@@ -984,8 +1000,14 @@ auto VulkanRenderer::setup_kms_surface() -> void
 				}
 			}
 			if (!plane_index) {
+				m_logger.info("    No display plane supports this display ({} "
+				              "plane(s) checked)",
+				    planes.size());
 				continue;
 			}
+
+			m_logger.info(
+			    "    Found suitable display on plane {}", *plane_index);
 
 			auto const extent = best_mode_it->parameters.visibleRegion;
 			KmsState state {};
