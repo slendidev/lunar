@@ -539,6 +539,8 @@ Application::Application()
 
 	init_input();
 
+	init_wayland();
+
 	if (m_backend == Backend::SDL)
 		mouse_captured(true);
 
@@ -645,6 +647,15 @@ auto Application::init_test_meshes() -> void
 	}
 
 	m_test_meshes = std::move(*meshes);
+}
+
+auto Application::init_wayland() -> void
+{
+	// TODO: Replace with new name, we might have conflicts!
+	auto const *WAYLAND_SOCKET_NAME { "wayland-5" };
+	m_wayland.display.add_socket(WAYLAND_SOCKET_NAME);
+	assert(setenv("WAYLAND_DISPLAY", WAYLAND_SOCKET_NAME, true) == 0);
+	m_logger.info("Started Wayland display socket on {}", WAYLAND_SOCKET_NAME);
 }
 
 auto Application::run() -> void

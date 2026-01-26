@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <string>
 #include <vector>
 
 #include <SDL3/SDL_video.h>
@@ -19,6 +18,7 @@
 #include "Logger.h"
 #include "Skybox.h"
 #include "Types.h"
+#include "wayland/Display.h"
 
 struct libinput;
 struct libinput_event_keyboard;
@@ -55,6 +55,7 @@ private:
 
 	auto init_input() -> void;
 	auto init_test_meshes() -> void;
+	auto init_wayland() -> void;
 	auto asset_directory() -> std::filesystem::path;
 	auto shutdown_input() -> void;
 	auto process_libinput_events() -> void;
@@ -78,6 +79,10 @@ private:
 	auto update_hands(XrTime display_time) -> void;
 	auto render_hands(
 	    VulkanRenderer::GL &gl, smath::Mat4 const &view_projection) -> void;
+
+	struct {
+		Wayland::Display display;
+	} m_wayland;
 
 	SDL_Window *m_window { nullptr };
 	Backend m_backend { Backend::SDL };
