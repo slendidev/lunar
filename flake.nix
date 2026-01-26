@@ -23,6 +23,7 @@
           pkg-config
           glslang
           shaderc
+          wayland-scanner
         ];
         buildInputs = with pkgs; [
           vulkan-loader

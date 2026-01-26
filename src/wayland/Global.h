@@ -40,7 +40,7 @@ struct Global {
 
 	auto get_name(Client &client) const -> std::optional<uint32_t>
 	{
-		if (auto const ret = wl_global_get_name(m_global, client.c_ptr());
+		if (auto const ret { wl_global_get_name(m_global, client.c_ptr()) };
 		    ret != 0) {
 			return ret;
 		} else {

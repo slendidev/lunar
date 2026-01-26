@@ -62,10 +62,10 @@ auto VulkanRenderer::GL::begin_drawing(vk::CommandBuffer cmd,
 	m_current_uv = { 0.0f, 0.0f };
 	m_bound_texture = &m_renderer.m_vk.error_image;
 
-	auto const extent = vk::Extent2D {
+	auto const extent { vk::Extent2D {
 		m_color_target->extent.width,
 		m_color_target->extent.height,
-	};
+	} };
 
 	vk::RenderingAttachmentInfo color_att {};
 	vk::ClearValue clear {};
@@ -189,7 +189,8 @@ auto VulkanRenderer::GL::set_culling(bool enabled) -> void
 	}
 
 	if (m_active_pipeline == &m_renderer.m_vk.mesh_pipeline
-	    || m_active_pipeline == &m_renderer.m_vk.mesh_pipeline_culled) {
+	    || m_active_pipeline == &m_renderer.m_vk.mesh_pipeline_culled
+	    || m_active_pipeline == &m_renderer.m_vk.wayland_pipeline) {
 		m_active_pipeline = enabled ? &m_renderer.m_vk.mesh_pipeline_culled
 		                            : &m_renderer.m_vk.mesh_pipeline;
 	} else if (m_active_pipeline == &m_renderer.m_vk.triangle_pipeline
@@ -206,7 +207,7 @@ auto VulkanRenderer::GL::end() -> void
 	if (!m_inside_primitive)
 		return;
 
-	auto const count = m_vertices.size() - m_primitive_start;
+	auto const count { m_vertices.size() - m_primitive_start };
 	emit_indices(m_primitive_start, count);
 	m_inside_primitive = false;
 }
@@ -220,8 +221,8 @@ auto VulkanRenderer::GL::flush() -> void
 	auto const index_data_size { m_indices.size() * sizeof(uint32_t) };
 	auto const staging_size { vertex_data_size + index_data_size };
 
-	auto staging = m_renderer.create_buffer(staging_size,
-	    vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY);
+	auto staging { m_renderer.create_buffer(staging_size,
+		vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY) };
 
 	void *staging_dst = staging.info.pMappedData;
 	bool staging_mapped_here { false };
@@ -273,7 +274,8 @@ auto VulkanRenderer::GL::flush() -> void
 	bind_pipeline_if_needed();
 
 	if (m_active_pipeline == &m_renderer.m_vk.mesh_pipeline
-	    || m_active_pipeline == &m_renderer.m_vk.mesh_pipeline_culled) {
+	    || m_active_pipeline == &m_renderer.m_vk.mesh_pipeline_culled
+	    || m_active_pipeline == &m_renderer.m_vk.wayland_pipeline) {
 		auto const image_set {
 			m_renderer.m_vk.get_current_frame().frame_descriptors.allocate(
 			    m_renderer.m_logger, m_renderer.m_vkb.dev.device,
@@ -327,6 +329,8 @@ auto VulkanRenderer::GL::use_pipeline(Pipeline &pipeline) -> void
 		resolved_pipeline = m_culling_enabled
 		    ? &m_renderer.m_vk.mesh_pipeline_culled
 		    : &m_renderer.m_vk.mesh_pipeline;
+	} else if (&pipeline == &m_renderer.m_vk.wayland_pipeline) {
+		resolved_pipeline = &m_renderer.m_vk.wayland_pipeline;
 	} else if (&pipeline == &m_renderer.m_vk.triangle_pipeline
 	    || &pipeline == &m_renderer.m_vk.triangle_pipeline_culled) {
 		resolved_pipeline = m_culling_enabled
@@ -369,23 +373,23 @@ auto VulkanRenderer::GL::pop_transform() -> void
 auto VulkanRenderer::GL::draw_rectangle(smath::Vec2 pos, smath::Vec2 size,
     smath::Vec4 rect_color, float rotation) -> void
 {
-	auto const half_size = size * 0.5f;
-	auto const center = pos + half_size;
+	auto const half_size { size * 0.5f };
+	auto const center { pos + half_size };
 
-	auto rotate = [&](smath::Vec2 const &p) {
+	auto rotate { [&](smath::Vec2 const &p) {
 		float const c = std::cos(rotation);
 		float const s = std::sin(rotation);
 		return smath::Vec2 { c * p.x() - s * p.y(), s * p.x() + c * p.y() };
-	};
+	} };
 
-	auto const br
-	    = center + rotate(smath::Vec2 { half_size.x(), -half_size.y() });
-	auto const tr
-	    = center + rotate(smath::Vec2 { half_size.x(), half_size.y() });
-	auto const bl
-	    = center + rotate(smath::Vec2 { -half_size.x(), -half_size.y() });
-	auto const tl
-	    = center + rotate(smath::Vec2 { -half_size.x(), half_size.y() });
+	auto const br { center
+		+ rotate(smath::Vec2 { half_size.x(), -half_size.y() }) };
+	auto const tr { center
+		+ rotate(smath::Vec2 { half_size.x(), half_size.y() }) };
+	auto const bl { center
+		+ rotate(smath::Vec2 { -half_size.x(), -half_size.y() }) };
+	auto const tl { center
+		+ rotate(smath::Vec2 { -half_size.x(), half_size.y() }) };
 
 	begin(GeometryKind::Quads);
 
@@ -710,6 +714,7 @@ VulkanRenderer::~VulkanRenderer()
 	m_vk.triangle_pipeline_culled.reset();
 	m_vk.mesh_pipeline.reset();
 	m_vk.mesh_pipeline_culled.reset();
+	m_vk.wayland_pipeline.reset();
 	m_vk.default_sampler_linear.reset();
 	m_vk.default_sampler_nearest.reset();
 
@@ -783,7 +788,7 @@ auto VulkanRenderer::set_antialiasing_immediate(AntiAliasingKind kind) -> void
 
 auto VulkanRenderer::apply_antialiasing(AntiAliasingKind kind) -> void
 {
-	auto requested_samples = [&](AntiAliasingKind aa) {
+	auto requested_samples { [&](AntiAliasingKind aa) {
 		switch (aa) {
 		case AntiAliasingKind::NONE:
 			return vk::SampleCountFlagBits::e1;
@@ -795,14 +800,14 @@ auto VulkanRenderer::apply_antialiasing(AntiAliasingKind kind) -> void
 			return vk::SampleCountFlagBits::e8;
 		}
 		return vk::SampleCountFlagBits::e1;
-	}(kind);
+	}(kind) };
 
-	auto best_supported = [&](vk::SampleCountFlagBits requested) {
-		auto const supported = m_vk.supported_framebuffer_samples;
+	auto best_supported { [&](vk::SampleCountFlagBits requested) {
+		auto const supported { m_vk.supported_framebuffer_samples };
 
-		auto pick_if_supported = [&](vk::SampleCountFlagBits candidate) {
+		auto pick_if_supported { [&](vk::SampleCountFlagBits candidate) {
 			return (supported & candidate) == candidate;
-		};
+		} };
 
 		if (requested >= vk::SampleCountFlagBits::e64
 		    && pick_if_supported(vk::SampleCountFlagBits::e64)) {
@@ -829,9 +834,9 @@ auto VulkanRenderer::apply_antialiasing(AntiAliasingKind kind) -> void
 			return vk::SampleCountFlagBits::e2;
 		}
 		return vk::SampleCountFlagBits::e1;
-	}(requested_samples);
+	}(requested_samples) };
 
-	auto kind_for_samples = [](vk::SampleCountFlagBits samples) {
+	auto kind_for_samples { [](vk::SampleCountFlagBits samples) {
 		switch (samples) {
 		case vk::SampleCountFlagBits::e2:
 			return AntiAliasingKind::MSAA_2X;
@@ -842,9 +847,9 @@ auto VulkanRenderer::apply_antialiasing(AntiAliasingKind kind) -> void
 		default:
 			return AntiAliasingKind::NONE;
 		}
-	};
+	} };
 
-	auto const effective_kind = kind_for_samples(best_supported);
+	auto const effective_kind { kind_for_samples(best_supported) };
 	if (m_vk.antialiasing_kind == effective_kind
 	    && m_vk.msaa_samples == best_supported) {
 		return;
@@ -933,7 +938,7 @@ auto VulkanRenderer::immediate_submit(
 
 auto VulkanRenderer::setup_kms_surface() -> void
 {
-	auto const devices = m_instance.enumeratePhysicalDevices();
+	auto const devices { m_instance.enumeratePhysicalDevices() };
 	if (devices.empty()) {
 		m_logger.err("No Vulkan physical devices available for KMS");
 		throw std::runtime_error("App init fail");
@@ -942,10 +947,10 @@ auto VulkanRenderer::setup_kms_surface() -> void
 	m_logger.info("Found {} Vulkan physical device(s)", devices.size());
 
 	for (auto const &device : devices) {
-		auto const props = device.getProperties();
+		auto const props { device.getProperties() };
 		m_logger.info("Checking device: {}", std::string(props.deviceName));
 
-		auto const displays = device.getDisplayPropertiesKHR();
+		auto const displays { device.getDisplayPropertiesKHR() };
 		if (displays.empty()) {
 			m_logger.info("  Device has no display properties");
 			continue;
@@ -968,24 +973,24 @@ auto VulkanRenderer::setup_kms_surface() -> void
 
 			m_logger.info("    Display has {} mode(s)", modes.size());
 
-			auto const best_mode_it = std::max_element(modes.begin(),
-			    modes.end(), [](auto const &lhs, auto const &rhs) {
-				    auto const lhs_extent = lhs.parameters.visibleRegion;
-				    auto const rhs_extent = rhs.parameters.visibleRegion;
-				    auto const lhs_area
-				        = static_cast<uint64_t>(lhs_extent.width)
-				        * static_cast<uint64_t>(lhs_extent.height);
-				    auto const rhs_area
-				        = static_cast<uint64_t>(rhs_extent.width)
-				        * static_cast<uint64_t>(rhs_extent.height);
+			auto const best_mode_it { std::max_element(modes.begin(),
+				modes.end(), [](auto const &lhs, auto const &rhs) {
+				    auto const lhs_extent { lhs.parameters.visibleRegion };
+				    auto const rhs_extent { rhs.parameters.visibleRegion };
+				    auto const lhs_area { static_cast<uint64_t>(
+					                          lhs_extent.width)
+					    * static_cast<uint64_t>(lhs_extent.height) };
+				    auto const rhs_area { static_cast<uint64_t>(
+					                          rhs_extent.width)
+					    * static_cast<uint64_t>(rhs_extent.height) };
 				    if (lhs_area == rhs_area) {
 					    return lhs.parameters.refreshRate
 					        < rhs.parameters.refreshRate;
 				    }
 				    return lhs_area < rhs_area;
-			    });
+				}) };
 
-			auto const planes = device.getDisplayPlanePropertiesKHR();
+			auto const planes { device.getDisplayPlanePropertiesKHR() };
 			std::optional<uint32_t> plane_index;
 			uint32_t plane_stack_index { 0 };
 			for (uint32_t i = 0; i < planes.size(); ++i) {
@@ -1009,7 +1014,7 @@ auto VulkanRenderer::setup_kms_surface() -> void
 			m_logger.info(
 			    "    Found suitable display on plane {}", *plane_index);
 
-			auto const extent = best_mode_it->parameters.visibleRegion;
+			auto const extent { best_mode_it->parameters.visibleRegion };
 			KmsState state {};
 			state.display = display_props.display;
 			state.mode = best_mode_it->displayMode;
@@ -1176,7 +1181,7 @@ auto VulkanRenderer::vk_init() -> void
 		m_logger.warn("KMS display is not on the selected physical device");
 	}
 
-	auto const props = m_physical_device.getProperties();
+	auto const props { m_physical_device.getProperties() };
 	m_vk.supported_framebuffer_samples
 	    = props.limits.framebufferColorSampleCounts
 	    & props.limits.framebufferDepthSampleCounts;
@@ -1335,10 +1340,10 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 	uint8_t triangle_vert_shader_data[] {
 #embed "triangle_vert.spv"
 	};
-	auto triangle_vert_shader = vkutil::load_shader_module(
-	    std::span<uint8_t>(
-	        triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
-	    m_device);
+	auto triangle_vert_shader { vkutil::load_shader_module(
+		std::span<uint8_t>(
+		    triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
+		m_device) };
 	if (!triangle_vert_shader) {
 		m_logger.err("Failed to load triangle vert shader");
 	}
@@ -1346,10 +1351,10 @@ auto VulkanRenderer::triangle_pipeline_init() -> void
 	uint8_t triangle_frag_shader_data[] {
 #embed "triangle_frag.spv"
 	};
-	auto triangle_frag_shader = vkutil::load_shader_module(
-	    std::span<uint8_t>(
-	        triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
-	    m_device);
+	auto triangle_frag_shader { vkutil::load_shader_module(
+		std::span<uint8_t>(
+		    triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
+		m_device) };
 	if (!triangle_frag_shader) {
 		m_logger.err("Failed to load triangle frag shader");
 	}
@@ -1399,10 +1404,10 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 	uint8_t triangle_vert_shader_data[] {
 #embed "triangle_mesh_vert.spv"
 	};
-	auto triangle_vert_shader = vkutil::load_shader_module(
-	    std::span<uint8_t>(
-	        triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
-	    m_device);
+	auto triangle_vert_shader { vkutil::load_shader_module(
+		std::span<uint8_t>(
+		    triangle_vert_shader_data, sizeof(triangle_vert_shader_data)),
+		m_device) };
 	if (!triangle_vert_shader) {
 		m_logger.err("Failed to load triangle vert shader");
 	}
@@ -1410,10 +1415,10 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 	uint8_t triangle_frag_shader_data[] {
 #embed "tex_image_frag.spv"
 	};
-	auto triangle_frag_shader = vkutil::load_shader_module(
-	    std::span<uint8_t>(
-	        triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
-	    m_device);
+	auto triangle_frag_shader { vkutil::load_shader_module(
+		std::span<uint8_t>(
+		    triangle_frag_shader_data, sizeof(triangle_frag_shader_data)),
+		m_device) };
 	if (!triangle_frag_shader) {
 		m_logger.err("Failed to load triangle frag shader");
 	}
@@ -1441,6 +1446,24 @@ auto VulkanRenderer::mesh_pipeline_init() -> void
 		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
 		          .disable_blending()
 		          .enable_depth_testing()
+		          .set_color_attachment_format(
+		              static_cast<VkFormat>(m_vk.draw_image.format))
+		          .set_depth_format(
+		              static_cast<VkFormat>(m_vk.depth_image.format));
+	      });
+	m_vk.wayland_pipeline
+	    = builder.build_graphics([&](GraphicsPipelineBuilder &pipeline_builder)
+	                                 -> GraphicsPipelineBuilder & {
+		      return pipeline_builder
+		          .set_shaders(
+		              triangle_vert_shader.get(), triangle_frag_shader.get())
+		          .set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+		          .set_polygon_mode(VK_POLYGON_MODE_FILL)
+		          .set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE)
+		          .set_multisampling(
+		              static_cast<VkSampleCountFlagBits>(m_vk.msaa_samples))
+		          .enable_blending_alpha_blend()
+		          .disable_depth_testing()
 		          .set_color_attachment_format(
 		              static_cast<VkFormat>(m_vk.draw_image.format))
 		          .set_depth_format(
@@ -1574,21 +1597,21 @@ auto VulkanRenderer::default_data_init() -> void
 
 	{
 		// Solid color images
-		auto const white = smath::pack_unorm4x8(smath::Vec4 { 1, 1, 1, 1 });
+		auto const white { smath::pack_unorm4x8(smath::Vec4 { 1, 1, 1, 1 }) };
 		m_vk.white_image = create_image(&white, vk::Extent3D { 1, 1, 1 },
 		    vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 
-		auto const black = smath::pack_unorm4x8(smath::Vec4 { 0, 0, 0, 1 });
+		auto const black { smath::pack_unorm4x8(smath::Vec4 { 0, 0, 0, 1 }) };
 		m_vk.black_image = create_image(&black, vk::Extent3D { 1, 1, 1 },
 		    vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 
-		auto const gray
-		    = smath::pack_unorm4x8(smath::Vec4 { 0.6f, 0.6f, 0.6f, 1 });
+		auto const gray { smath::pack_unorm4x8(
+			smath::Vec4 { 0.6f, 0.6f, 0.6f, 1 }) };
 		m_vk.gray_image = create_image(&gray, vk::Extent3D { 1, 1, 1 },
 		    vk::Format::eR8G8B8A8Unorm, vk::ImageUsageFlagBits::eSampled);
 
 		// Error checkerboard image
-		auto const magenta = smath::pack_unorm4x8(smath::Vec4 { 1, 0, 1, 1 });
+		auto const magenta { smath::pack_unorm4x8(smath::Vec4 { 1, 0, 1, 1 }) };
 		std::array<uint32_t, 16 * 16> checkerboard;
 		for (int x = 0; x < 16; x++) {
 			for (int y = 0; y < 16; y++) {
@@ -1632,7 +1655,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 
 	process_render_commands();
 
-	auto &frame = m_vk.get_current_frame();
+	auto &frame { m_vk.get_current_frame() };
 	VK_CHECK(m_logger,
 	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
 	frame.deletion_queue.flush();
@@ -1645,8 +1668,8 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	auto raw_fence { static_cast<VkFence>(frame.render_fence.get()) };
 	VK_CHECK(m_logger, vkResetFences(m_vkb.dev.device, 1, &raw_fence));
 
-	auto const acquire_result = m_device.acquireNextImageKHR(
-	    m_vk.swapchain, 1'000'000'000, frame.swapchain_semaphore.get(), {});
+	auto const acquire_result { m_device.acquireNextImageKHR(
+		m_vk.swapchain, 1'000'000'000, frame.swapchain_semaphore.get(), {}) };
 	if (acquire_result.result == vk::Result::eErrorOutOfDateKHR
 	    || acquire_result.result == vk::Result::eSuboptimalKHR) {
 		if (m_use_kms) {
@@ -1806,8 +1829,9 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 
 	cmd.end();
 
-	auto render_semaphore
-	    = m_vk.present_semaphores.at(swapchain_image_idx).get();
+	auto render_semaphore {
+		m_vk.present_semaphores.at(swapchain_image_idx).get()
+	};
 	vk::PipelineStageFlags2 wait_stage
 	    = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
 	auto wait_info { vkinit::semaphore_submit_info(
@@ -1826,7 +1850,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	present_info.setWaitSemaphores(render_semaphore);
 	present_info.setImageIndices(swapchain_image_idx);
 
-	auto const present_result = m_vk.graphics_queue.presentKHR(present_info);
+	auto const present_result { m_vk.graphics_queue.presentKHR(present_info) };
 	if (present_result == vk::Result::eErrorOutOfDateKHR
 	    || present_result == vk::Result::eSuboptimalKHR) {
 		if (m_use_kms) {
@@ -1854,7 +1878,7 @@ auto VulkanRenderer::render_to_image(vk::Image target_image,
 
 	process_render_commands();
 
-	auto &frame = m_vk.get_current_frame();
+	auto &frame { m_vk.get_current_frame() };
 	VK_CHECK(m_logger,
 	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
 	frame.deletion_queue.flush();
@@ -2212,7 +2236,7 @@ auto VulkanRenderer::emit_frame_screenshot(FrameData &frame) -> void
 		destination[i] = source[i + 2];
 		destination[i + 1] = source[i + 1];
 		destination[i + 2] = source[i];
-		destination[i + 3] = source[i + 3];
+		destination[i + 3] = 0xff;
 	}
 
 	auto const screenshot_flags { vk::ImageUsageFlagBits::eSampled };
@@ -2483,25 +2507,29 @@ auto VulkanRenderer::create_image(void const *data, vk::Extent3D size,
 		    vk::SampleCountFlagBits::e1, mipmapped),
 	};
 
-	immediate_submit([&](vk::CommandBuffer cmd) {
-		vkutil::transition_image(cmd, new_image.image,
-		    vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+	immediate_submit(
+	    [&](vk::CommandBuffer cmd) {
+		    vkutil::transition_image(cmd, new_image.image,
+		        vk::ImageLayout::eUndefined,
+		        vk::ImageLayout::eTransferDstOptimal);
 
-		vk::BufferImageCopy copy_region {};
-		copy_region.imageSubresource.aspectMask
-		    = vk::ImageAspectFlagBits::eColor;
-		copy_region.imageSubresource.mipLevel = 0;
-		copy_region.imageSubresource.baseArrayLayer = 0;
-		copy_region.imageSubresource.layerCount = 1;
-		copy_region.imageExtent = size;
+		    vk::BufferImageCopy copy_region {};
+		    copy_region.imageSubresource.aspectMask
+		        = vk::ImageAspectFlagBits::eColor;
+		    copy_region.imageSubresource.mipLevel = 0;
+		    copy_region.imageSubresource.baseArrayLayer = 0;
+		    copy_region.imageSubresource.layerCount = 1;
+		    copy_region.imageExtent = size;
 
-		cmd.copyBufferToImage(upload_buffer.buffer, new_image.image,
-		    vk::ImageLayout::eTransferDstOptimal, copy_region);
+		    cmd.copyBufferToImage(upload_buffer.buffer, new_image.image,
+		        vk::ImageLayout::eTransferDstOptimal, copy_region);
 
-		vkutil::transition_image(cmd, new_image.image,
-		    vk::ImageLayout::eTransferDstOptimal,
-		    vk::ImageLayout::eShaderReadOnlyOptimal);
-	});
+		    vkutil::transition_image(cmd, new_image.image,
+		        vk::ImageLayout::eTransferDstOptimal,
+		        vk::ImageLayout::eShaderReadOnlyOptimal);
+	    },
+	    /*flush_frame_deletion_queue=*/false,
+	    /*clear_frame_descriptors=*/false);
 
 	if (mapped_here) {
 		vmaUnmapMemory(m_vk.allocator, upload_buffer.allocation);
@@ -2580,58 +2608,63 @@ auto VulkanRenderer::create_cubemap(std::span<uint8_t const> pixels,
 	view_ci.subresourceRange.layerCount = 6;
 	new_image.image_view = m_device.createImageView(view_ci);
 
-	immediate_submit([&](vk::CommandBuffer cmd) {
-		vk::ImageMemoryBarrier to_transfer {};
-		to_transfer.srcAccessMask = vk::AccessFlagBits::eNone;
-		to_transfer.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-		to_transfer.oldLayout = vk::ImageLayout::eUndefined;
-		to_transfer.newLayout = vk::ImageLayout::eTransferDstOptimal;
-		to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		to_transfer.image = new_image.image;
-		to_transfer.subresourceRange.aspectMask
-		    = vk::ImageAspectFlagBits::eColor;
-		to_transfer.subresourceRange.baseMipLevel = 0;
-		to_transfer.subresourceRange.levelCount = 1;
-		to_transfer.subresourceRange.baseArrayLayer = 0;
-		to_transfer.subresourceRange.layerCount = 6;
+	immediate_submit(
+	    [&](vk::CommandBuffer cmd) {
+		    vk::ImageMemoryBarrier to_transfer {};
+		    to_transfer.srcAccessMask = vk::AccessFlagBits::eNone;
+		    to_transfer.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+		    to_transfer.oldLayout = vk::ImageLayout::eUndefined;
+		    to_transfer.newLayout = vk::ImageLayout::eTransferDstOptimal;
+		    to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		    to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		    to_transfer.image = new_image.image;
+		    to_transfer.subresourceRange.aspectMask
+		        = vk::ImageAspectFlagBits::eColor;
+		    to_transfer.subresourceRange.baseMipLevel = 0;
+		    to_transfer.subresourceRange.levelCount = 1;
+		    to_transfer.subresourceRange.baseArrayLayer = 0;
+		    to_transfer.subresourceRange.layerCount = 6;
 
-		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-		    vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, to_transfer);
+		    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+		        vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, to_transfer);
 
-		std::array<vk::BufferImageCopy, 6> regions {};
-		for (uint32_t layer = 0; layer < 6; ++layer) {
-			vk::BufferImageCopy region {};
-			region.bufferOffset = face_bytes * layer;
-			region.imageSubresource.aspectMask
-			    = vk::ImageAspectFlagBits::eColor;
-			region.imageSubresource.mipLevel = 0;
-			region.imageSubresource.baseArrayLayer = layer;
-			region.imageSubresource.layerCount = 1;
-			region.imageExtent = new_image.extent;
-			regions[layer] = region;
-		}
+		    std::array<vk::BufferImageCopy, 6> regions {};
+		    for (uint32_t layer = 0; layer < 6; ++layer) {
+			    vk::BufferImageCopy region {};
+			    region.bufferOffset = face_bytes * layer;
+			    region.imageSubresource.aspectMask
+			        = vk::ImageAspectFlagBits::eColor;
+			    region.imageSubresource.mipLevel = 0;
+			    region.imageSubresource.baseArrayLayer = layer;
+			    region.imageSubresource.layerCount = 1;
+			    region.imageExtent = new_image.extent;
+			    regions[layer] = region;
+		    }
 
-		cmd.copyBufferToImage(upload_buffer.buffer, new_image.image,
-		    vk::ImageLayout::eTransferDstOptimal, regions);
+		    cmd.copyBufferToImage(upload_buffer.buffer, new_image.image,
+		        vk::ImageLayout::eTransferDstOptimal, regions);
 
-		vk::ImageMemoryBarrier to_read {};
-		to_read.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-		to_read.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-		to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-		to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-		to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		to_read.image = new_image.image;
-		to_read.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-		to_read.subresourceRange.baseMipLevel = 0;
-		to_read.subresourceRange.levelCount = 1;
-		to_read.subresourceRange.baseArrayLayer = 0;
-		to_read.subresourceRange.layerCount = 6;
+		    vk::ImageMemoryBarrier to_read {};
+		    to_read.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		    to_read.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+		    to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+		    to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+		    to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		    to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		    to_read.image = new_image.image;
+		    to_read.subresourceRange.aspectMask
+		        = vk::ImageAspectFlagBits::eColor;
+		    to_read.subresourceRange.baseMipLevel = 0;
+		    to_read.subresourceRange.levelCount = 1;
+		    to_read.subresourceRange.baseArrayLayer = 0;
+		    to_read.subresourceRange.layerCount = 6;
 
-		cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-		    vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, to_read);
-	});
+		    cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		        vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+		        to_read);
+	    },
+	    /*flush_frame_deletion_queue=*/false,
+	    /*clear_frame_descriptors=*/false);
 
 	if (mapped_here) {
 		vmaUnmapMemory(m_vk.allocator, upload_buffer.allocation);
@@ -2648,6 +2681,12 @@ auto VulkanRenderer::destroy_image(AllocatedImage const &img) -> void
 	}
 	vmaDestroyImage(
 	    m_vk.allocator, static_cast<VkImage>(img.image), img.allocation);
+}
+
+auto VulkanRenderer::destroy_image_later(AllocatedImage img) -> void
+{
+	m_vk.get_current_frame().deletion_queue.emplace(
+	    [this, img]() { destroy_image(img); });
 }
 
 auto VulkanRenderer::create_buffer(size_t alloc_size,

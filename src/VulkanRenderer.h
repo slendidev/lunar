@@ -164,6 +164,7 @@ struct VulkanRenderer {
 	auto create_cubemap(std::span<uint8_t const> pixels, uint32_t face_size,
 	    vk::Format format, vk::ImageUsageFlags flags) -> AllocatedImage;
 	auto destroy_image(AllocatedImage const &img) -> void;
+	auto destroy_image_later(AllocatedImage img) -> void;
 	auto rectangle_mesh() const -> GPUMeshBuffers const &
 	{
 		return m_vk.rectangle;
@@ -186,6 +187,7 @@ struct VulkanRenderer {
 	}
 	auto draw_extent() const -> vk::Extent2D { return m_vk.draw_extent; }
 	auto mesh_pipeline() -> Pipeline & { return m_vk.mesh_pipeline; }
+	auto wayland_pipeline() -> Pipeline & { return m_vk.wayland_pipeline; }
 	auto triangle_pipeline() -> Pipeline & { return m_vk.triangle_pipeline; }
 	auto device() const -> vk::Device { return m_device; }
 	auto instance() const -> vk::Instance { return m_instance; }
@@ -359,6 +361,7 @@ private:
 		Pipeline triangle_pipeline_culled;
 		Pipeline mesh_pipeline;
 		Pipeline mesh_pipeline_culled;
+		Pipeline wayland_pipeline;
 
 		GPUMeshBuffers rectangle;
 

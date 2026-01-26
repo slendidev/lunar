@@ -19,15 +19,16 @@ constexpr std::ptrdiff_t member_offset() noexcept
 template<typename T, wl_list T::*Member>
 inline T *container_of(wl_list *node) noexcept
 {
-	auto *p = reinterpret_cast<std::byte *>(node) - member_offset<T, Member>();
+	auto *p { reinterpret_cast<std::byte *>(node)
+		- member_offset<T, Member>() };
 	return reinterpret_cast<T *>(p);
 }
 
 template<typename T, wl_list T::*Member>
 inline T const *container_of(wl_list const *node) noexcept
 {
-	auto *p = reinterpret_cast<std::byte const *>(node)
-	    - member_offset<T, Member>();
+	auto *p { reinterpret_cast<std::byte const *>(node)
+		- member_offset<T, Member>() };
 	return reinterpret_cast<T const *>(p);
 }
 
@@ -64,7 +65,7 @@ template<typename T, wl_list T::*Member> struct List {
 		}
 		auto operator++(int) -> Iterator
 		{
-			auto t = *this;
+			auto t { *this };
 			++(*this);
 			return t;
 		}
@@ -76,7 +77,7 @@ template<typename T, wl_list T::*Member> struct List {
 		}
 		auto operator--(int) -> Iterator
 		{
-			auto t = *this;
+			auto t { *this };
 			--(*this);
 			return t;
 		}
@@ -125,7 +126,7 @@ template<typename T, wl_list T::*Member> struct List {
 		}
 		auto operator++(int) -> ConstIterator
 		{
-			auto t = *this;
+			auto t { *this };
 			++(*this);
 			return t;
 		}
@@ -137,7 +138,7 @@ template<typename T, wl_list T::*Member> struct List {
 		}
 		auto operator--(int) -> ConstIterator
 		{
-			auto t = *this;
+			auto t { *this };
 			--(*this);
 			return t;
 		}
@@ -180,7 +181,7 @@ template<typename T, wl_list T::*Member> struct List {
 			return;
 
 		clear();
-		if (auto *h = head_ptr(); h)
+		if (auto *h { head_ptr() }; h)
 			wl_list_init(h);
 	}
 
@@ -211,7 +212,7 @@ template<typename T, wl_list T::*Member> struct List {
 
 	auto push_back(T *elem) noexcept -> void
 	{
-		auto *h = head_ptr();
+		auto *h { head_ptr() };
 		wl_list_insert(h->prev, &(elem->*Member));
 	}
 
@@ -223,9 +224,9 @@ template<typename T, wl_list T::*Member> struct List {
 
 	auto clear() noexcept -> void
 	{
-		auto *h = head_ptr();
+		auto *h { head_ptr() };
 		while (!wl_list_empty(h)) {
-			auto *node = h->next;
+			auto *node { h->next };
 			wl_list_remove(node);
 			wl_list_init(node);
 		}
@@ -233,25 +234,25 @@ template<typename T, wl_list T::*Member> struct List {
 
 	auto begin() noexcept -> Iterator
 	{
-		auto *h = head_ptr();
+		auto *h { head_ptr() };
 		return Iterator(h->next, h);
 	}
 
 	auto end() noexcept -> Iterator
 	{
-		auto *h = head_ptr();
+		auto *h { head_ptr() };
 		return Iterator(h, h);
 	}
 
 	auto begin() const noexcept -> ConstIterator
 	{
-		auto const *h = head_ptr();
+		auto const *h { head_ptr() };
 		return ConstIterator(h->next, h);
 	}
 
 	auto end() const noexcept -> ConstIterator
 	{
-		auto const *h = head_ptr();
+		auto const *h { head_ptr() };
 		return ConstIterator(h, h);
 	}
 

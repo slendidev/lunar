@@ -64,8 +64,8 @@ struct Display {
 	auto add_protocol_logger(wl_protocol_logger_func_t func, void *user_data)
 	    -> wl_protocol_logger *
 	{
-		if (auto *logger
-		    = wl_display_add_protocol_logger(m_display, func, user_data);
+		if (auto *logger {
+		        wl_display_add_protocol_logger(m_display, func, user_data) };
 		    logger != NULL) {
 			return logger;
 		} else {
@@ -76,7 +76,7 @@ struct Display {
 
 	auto add_shm_format(uint32_t format) -> uint32_t *
 	{
-		if (auto *fmt = wl_display_add_shm_format(m_display, format);
+		if (auto *fmt { wl_display_add_shm_format(m_display, format) };
 		    fmt != NULL) {
 			return fmt;
 		} else {

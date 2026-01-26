@@ -29,6 +29,9 @@ namespace Lunar {
 
 struct VulkanRenderer;
 struct OpenXrState;
+namespace Wayland {
+struct WaylandServer;
+}
 
 struct Application {
 	auto run() -> void;
@@ -80,10 +83,6 @@ private:
 	auto render_hands(
 	    VulkanRenderer::GL &gl, smath::Mat4 const &view_projection) -> void;
 
-	struct {
-		Wayland::Display display;
-	} m_wayland;
-
 	SDL_Window *m_window { nullptr };
 	Backend m_backend { Backend::SDL };
 	Logger m_logger { "Lunar" };
@@ -95,6 +94,7 @@ private:
 	libinput *m_libinput { nullptr };
 
 	std::unique_ptr<OpenXrState> m_openxr {};
+	std::unique_ptr<Wayland::WaylandServer> m_wayland {};
 
 	bool m_running { true };
 	bool m_mouse_captured { false };

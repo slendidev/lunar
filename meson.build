@@ -1,4 +1,4 @@
-project('vr-compositor', 'cpp',
+project('vr-compositor', 'c', 'cpp',
 	version: '0.1',
 	default_options: [
 		'cpp_std=c++26',
@@ -17,14 +17,32 @@ fastgltf_opts.set_override_option('werror', 'false')
 fastgltf = cmake.subproject('fastgltf', options: fastgltf_opts)
 
 cc = meson.get_compiler('cpp')
+wl_mod = import('wayland')
 
 wayland_dep = dependency('wayland-server', include_type: 'system')
+wayland_client_dep = dependency('wayland-client', include_type: 'system')
 vulkan_dep = dependency('vulkan', include_type: 'system')
 openxr_dep = dependency('openxr', include_type: 'system')
 zlib_dep = dependency('zlib', include_type: 'system')
 sdl3_dep = dependency('sdl3', include_type: 'system')
 libinput_dep = dependency('libinput', include_type: 'system')
 libudev_dep = dependency('libudev', include_type: 'system')
+wayland_protocol = wl_mod.scan_xml(
+	'protocols/wayland.xml',
+	client: false,
+	server: true,
+)
+wayland_protocol_source = wayland_protocol[0]
+wayland_server_header = wayland_protocol[1]
+
+xdg_shell_protocol = wl_mod.scan_xml(
+	'protocols/xdg-shell.xml',
+	client: true,
+	server: true,
+)
+xdg_shell_protocol_source = xdg_shell_protocol[0]
+xdg_shell_client_header = xdg_shell_protocol[1]
+xdg_shell_server_header = xdg_shell_protocol[2]
 imgui_src = files(
 	'thirdparty/imgui/imgui.cpp',
 	'thirdparty/imgui/imgui_draw.cpp',
@@ -161,12 +179,24 @@ exe = executable('vr-compositor',
 		'src/Loader.cpp',
 		'src/DescriptorWriter.cpp',
 		'src/CPUTexture.cpp',
+		'src/wayland/WaylandServer.cpp',
+		'src/wayland/Surface.cpp',
+		'src/wayland/Shm.cpp',
+		'src/wayland/protocols/CompositorProtocol.cpp',
+		'src/wayland/protocols/ShmProtocol.cpp',
+		'src/wayland/protocols/XdgShellProtocol.cpp',
 		'src/Skybox.cpp',
 		'src/VulkanRenderer.cpp',
 		'src/Application.cpp',
+		wayland_protocol_source,
+		xdg_shell_protocol_source,
+		wayland_server_header,
+		xdg_shell_server_header,
 	],
+	c_args: ['-Wno-missing-variable-declarations'],
 	include_directories: [
 		vkbootstrap_inc,
+		include_directories('.'),
 		imgui_inc,
 		'thirdparty/smath/include'
 	],
@@ -175,4 +205,12 @@ exe = executable('vr-compositor',
 	cpp_args: [
 		'--embed-dir=' + join_paths(meson.project_build_root(), 'shaders'),
 	],
+)
+
+executable('shm-life',
+	'tools/shm_life.cpp',
+	dependencies: [wayland_client_dep],
+	sources: [xdg_shell_protocol_source, xdg_shell_client_header],
+	c_args: ['-Wno-missing-variable-declarations'],
+	cpp_args: ['-Wno-cast-qual'],
 )

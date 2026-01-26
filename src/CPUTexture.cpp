@@ -76,4 +76,13 @@ CPUTexture::CPUTexture(std::filesystem::path const &path)
 	stbi_image_free(data);
 }
 
+CPUTexture::CPUTexture(std::vector<uint8_t> pixels, uint32_t width,
+    uint32_t height, vk::Format format)
+    : pixels(std::move(pixels))
+    , width(width)
+    , height(height)
+    , format(format)
+{
+}
+
 } // namespace Lunar

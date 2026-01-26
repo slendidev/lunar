@@ -24,6 +24,8 @@
 #define XR_USE_GRAPHICS_API_VULKAN
 #include <openxr/openxr_platform.h>
 
+#include "wayland-server-protocol.h"
+
 #if defined(__clang__)
 #	pragma clang diagnostic push
 #	pragma clang diagnostic ignored "-Wreserved-identifier"
@@ -59,6 +61,9 @@
 
 #include "Util.h"
 #include "VulkanRenderer.h"
+#include "wayland/Shm.h"
+#include "wayland/Surface.h"
+#include "wayland/WaylandServer.h"
 
 #if defined(TRACY_ENABLE)
 #	include <tracy/Tracy.hpp>
@@ -416,11 +421,11 @@ auto split_extension_list(std::string_view list) -> std::vector<std::string>
 		if (start >= list.size()) {
 			break;
 		}
-		auto end = list.find(' ', start);
+		auto end { list.find(' ', start) };
 		if (end == std::string_view::npos) {
 			end = list.size();
 		}
-		auto token = list.substr(start, end - start);
+		auto token { list.substr(start, end - start) };
 		if (!token.empty()) {
 			extensions.emplace_back(token);
 		}
@@ -433,9 +438,9 @@ auto xr_rotate_vector(XrQuaternionf q, smath::Vec3 v) -> smath::Vec3
 {
 	smath::Vec3 u { q.x, q.y, q.z };
 	float const s = q.w;
-	auto const dot = u.dot(v);
-	auto const u_dot = u.dot(u);
-	auto const cross = u.cross(v);
+	auto const dot { u.dot(v) };
+	auto const u_dot { u.dot(u) };
+	auto const cross { u.cross(v) };
 	return (u * (2.0f * dot)) + (v * (s * s - u_dot)) + (cross * (2.0f * s));
 }
 
@@ -445,6 +450,45 @@ auto xr_rotate_vector(XrQuaternionf q, smath::Vec3 v) -> smath::Vec3
 	std::array<char, XR_MAX_RESULT_STRING_SIZE> buffer {};
 	xrResultToString(instance, result, buffer.data());
 	return std::string { buffer.data() };
+}
+
+auto make_shm_texture(Lunar::Wayland::ShmBuffer const &buffer)
+    -> std::optional<Lunar::CPUTexture>
+{
+	if (!buffer.pool || !buffer.data()) {
+		return {};
+	}
+	if (buffer.width <= 0 || buffer.height <= 0 || buffer.stride <= 0) {
+		return {};
+	}
+	if (buffer.format != WL_SHM_FORMAT_ARGB8888
+	    && buffer.format != WL_SHM_FORMAT_XRGB8888) {
+		return {};
+	}
+
+	auto const width { static_cast<uint32_t>(buffer.width) };
+	auto const height { static_cast<uint32_t>(buffer.height) };
+	auto const row_bytes { static_cast<size_t>(width) * 4 };
+	if (buffer.stride < static_cast<std::int32_t>(row_bytes)) {
+		return {};
+	}
+
+	std::vector<uint8_t> pixels(row_bytes * height);
+	auto const *src { reinterpret_cast<uint8_t const *>(buffer.data()) };
+	for (uint32_t y = 0; y < height; ++y) {
+		auto const *row_src { src + static_cast<size_t>(buffer.stride) * y };
+		auto const dst_y { height - y - 1 };
+		auto *row_dst { pixels.data() + row_bytes * dst_y };
+		std::memcpy(row_dst, row_src, row_bytes);
+		if (buffer.format == WL_SHM_FORMAT_XRGB8888) {
+			for (uint32_t x = 0; x < width; ++x) {
+				row_dst[x * 4 + 3] = 0xff;
+			}
+		}
+	}
+
+	return Lunar::CPUTexture(
+	    std::move(pixels), width, height, vk::Format::eB8G8R8A8Unorm);
 }
 
 } // namespace
@@ -494,11 +538,12 @@ Application::Application()
 	bool const has_display
 	    = (display_env && *display_env) || (wayland_env && *wayland_env);
 	m_backend = has_display ? Backend::SDL : Backend::KMS;
+	m_wayland = std::make_unique<Wayland::WaylandServer>(m_logger);
 
 	init_openxr();
 
-	auto instance_extensions = std::span<std::string const> {};
-	auto device_extensions = std::span<std::string const> {};
+	auto instance_extensions { std::span<std::string const> {} };
+	auto device_extensions { std::span<std::string const> {} };
 	if (m_openxr) {
 		instance_extensions = m_openxr->instance_extensions;
 		device_extensions = m_openxr->device_extensions;
@@ -595,12 +640,12 @@ auto Application::asset_directory() -> std::filesystem::path
 		candidates.emplace_back(base / "lunar" / "assets");
 	} };
 
-	if (auto const *xdg_data_home = getenv("XDG_DATA_HOME");
+	if (auto const *xdg_data_home { getenv("XDG_DATA_HOME") };
 	    xdg_data_home && *xdg_data_home) {
 		add_xdg_path(xdg_data_home);
 	}
 
-	if (auto const *xdg_data_dirs = getenv("XDG_DATA_DIRS");
+	if (auto const *xdg_data_dirs { getenv("XDG_DATA_DIRS") };
 	    xdg_data_dirs && *xdg_data_dirs) {
 		std::string_view dirs_view { xdg_data_dirs };
 		size_t start { 0 };
@@ -651,11 +696,10 @@ auto Application::init_test_meshes() -> void
 
 auto Application::init_wayland() -> void
 {
-	// TODO: Replace with new name, we might have conflicts!
-	auto const *WAYLAND_SOCKET_NAME { "wayland-5" };
-	m_wayland.display.add_socket(WAYLAND_SOCKET_NAME);
-	assert(setenv("WAYLAND_DISPLAY", WAYLAND_SOCKET_NAME, true) == 0);
-	m_logger.info("Started Wayland display socket on {}", WAYLAND_SOCKET_NAME);
+	auto const socket_name { m_wayland->socket_name() };
+	assert(setenv("WAYLAND_DISPLAY", socket_name.data(), true) == 0);
+	m_logger.info("Started Wayland display socket on {}", socket_name);
+	std::println("WAYLAND_DISPLAY={}", socket_name);
 }
 
 auto Application::run() -> void
@@ -675,6 +719,10 @@ auto Application::run() -> void
 	float fps { 0.0f };
 	while (m_running) {
 		GZoneScopedN("Frame");
+		if (m_wayland) {
+			m_wayland->dispatch();
+			m_wayland->flush();
+		}
 		if (m_openxr) {
 			poll_openxr_events();
 		}
@@ -682,7 +730,7 @@ auto Application::run() -> void
 		if (use_sdl) {
 			now = SDL_GetTicks();
 		} else {
-			auto const now_tp = std::chrono::steady_clock::now();
+			auto const now_tp { std::chrono::steady_clock::now() };
 			now = static_cast<uint64_t>(
 			    std::chrono::duration_cast<std::chrono::milliseconds>(
 			        now_tp.time_since_epoch())
@@ -827,9 +875,9 @@ auto Application::run() -> void
 
 			if (!m_show_imgui) {
 				m_camera.up = camera_up;
-				auto const distance = target_distance > 0.0f
-				    ? target_distance
-				    : std::max(1.0f, m_cursor.r);
+				auto const distance { target_distance > 0.0f
+					    ? target_distance
+					    : std::max(1.0f, m_cursor.r) };
 				m_camera.target = m_camera.position + look_dir * distance;
 			}
 
@@ -963,15 +1011,15 @@ auto Application::run() -> void
 			ImGui::Render();
 		}
 
-		auto record_scene = [&](VulkanRenderer::GL &gl) {
+		auto record_scene { [&](VulkanRenderer::GL &gl) {
 			GZoneScopedN("Render");
 			auto view { smath::matrix_look_at(
 				m_camera.position, m_camera.target, m_camera.up) };
-			auto const draw_extent = m_renderer->draw_extent();
-			auto const aspect = draw_extent.height == 0
-			    ? 1.0f
-			    : static_cast<float>(draw_extent.width)
-			        / static_cast<float>(draw_extent.height);
+			auto const draw_extent { m_renderer->draw_extent() };
+			auto const aspect { draw_extent.height == 0
+				    ? 1.0f
+				    : static_cast<float>(draw_extent.width)
+				        / static_cast<float>(draw_extent.height) };
 			auto projection { smath::matrix_perspective(
 				m_camera.fovy, aspect, 0.1f, 10000.0f) };
 			projection[1][1] *= -1;
@@ -987,7 +1035,7 @@ auto Application::run() -> void
 			gl.set_texture();
 			auto const &meshes { m_test_meshes };
 			if (meshes.size() > 2 && !meshes[2]->surfaces.empty()) {
-				auto const &surface = meshes[2]->surfaces[0];
+				auto const &surface { meshes[2]->surfaces[0] };
 				gl.draw_mesh(meshes[2]->mesh_buffers,
 				    view_projection
 				        * smath::translate(smath::Vec3 { 0.0f, 0.0f, -5.0f }),
@@ -1033,7 +1081,48 @@ auto Application::run() -> void
 			if (m_openxr && m_openxr->hand_tracking_supported) {
 				render_hands(gl, view_projection);
 			}
-		};
+
+			if (m_wayland) {
+				auto const wayland_draw_extent { m_renderer->draw_extent() };
+				auto const draw_width { static_cast<float>(
+					wayland_draw_extent.width) };
+				auto const draw_height { static_cast<float>(
+					wayland_draw_extent.height) };
+				if (draw_width > 0.0f && draw_height > 0.0f) {
+					gl.set_transform(smath::Mat4::identity());
+					gl.set_culling(false);
+					gl.use_pipeline(m_renderer->wayland_pipeline());
+					for (auto *surface : m_wayland->surfaces()) {
+						auto buffer { surface->current_buffer() };
+						if (!buffer) {
+							continue;
+						}
+						auto texture { make_shm_texture(*buffer) };
+						if (!texture) {
+							continue;
+						}
+						auto const width { static_cast<float>(buffer->width) };
+						auto const height { static_cast<float>(
+							buffer->height) };
+						auto const size { smath::Vec2 {
+							(width / draw_width) * 2.0f,
+							(height / draw_height) * 2.0f,
+						} };
+						auto const pos { smath::Vec2 {
+							-1.0f, 1.0f - size.y() } };
+						auto image { m_renderer->create_image(
+							*texture, vk::ImageUsageFlagBits::eSampled) };
+						gl.set_texture(&image);
+						gl.draw_rectangle(pos, size);
+						gl.flush();
+						gl.set_texture(std::nullopt);
+						m_renderer->destroy_image_later(image);
+					}
+					gl.use_pipeline(m_renderer->mesh_pipeline());
+					gl.set_culling(true);
+				}
+			}
+		} };
 
 		if (xr_active) {
 			if (m_openxr && m_openxr->session_running) {
@@ -1100,7 +1189,7 @@ auto Application::shutdown_input() -> void
 
 auto Application::init_openxr() -> void
 {
-	if (auto const *no_xr = getenv("LUNAR_NO_XR"); no_xr && *no_xr) {
+	if (auto const *no_xr { getenv("LUNAR_NO_XR") }; no_xr && *no_xr) {
 		return;
 	}
 	m_openxr = std::make_unique<OpenXrState>();
@@ -1562,7 +1651,8 @@ auto Application::init_openxr_session() -> void
 	};
 	m_openxr->color_format = formats.front();
 	for (auto const preferred : preferred_formats) {
-		auto const found = std::find(formats.begin(), formats.end(), preferred);
+		auto const found { std::find(
+			formats.begin(), formats.end(), preferred) };
 		if (found != formats.end()) {
 			m_openxr->color_format = *found;
 			break;

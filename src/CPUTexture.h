@@ -15,6 +15,8 @@ struct CPUTexture {
 	vk::Format format { vk::Format::eR8G8B8A8Unorm };
 
 	explicit CPUTexture(std::filesystem::path const &path);
+	CPUTexture(std::vector<uint8_t> pixels, uint32_t width, uint32_t height,
+	    vk::Format format);
 };
 
 } // namespace Lunar
