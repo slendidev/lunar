@@ -1092,7 +1092,7 @@ auto Application::run() -> void
 				wayland_draw_extent.height) };
 			if (draw_width > 0.0f && draw_height > 0.0f) {
 				gl.set_transform(smath::Mat4::identity());
-				gl.set_culling(false);
+				gl.set_culling(true);
 				gl.use_pipeline(m_renderer->wayland_pipeline());
 				for (auto *surface : m_wayland->surfaces()) {
 					auto buffer { surface->current_buffer() };

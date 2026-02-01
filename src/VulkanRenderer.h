@@ -84,6 +84,9 @@ struct VulkanRenderer {
 		auto draw_sphere(smath::Vec3 center, float radius, int rings = 16,
 		    int segments = 32, std::optional<smath::Vec4> sphere_color = {})
 		    -> void;
+		auto draw_texture_cyl(AllocatedImage const *texture,
+		    smath::Vec3 sphere_center, PolarCoordinate coord, float rad,
+		    float scale, bool y_flip) -> void;
 		auto end() -> void;
 		auto flush() -> void;
 
