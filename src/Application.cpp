@@ -719,7 +719,8 @@ auto Application::run() -> void
 	float fps { 0.0f };
 	while (m_running) {
 		GZoneScopedN("Frame");
-		if (m_wayland) {
+		{
+			assert(m_wayland);
 			m_wayland->dispatch();
 			m_wayland->flush();
 		}
@@ -1082,45 +1083,43 @@ auto Application::run() -> void
 				render_hands(gl, view_projection);
 			}
 
-			if (m_wayland) {
-				auto const wayland_draw_extent { m_renderer->draw_extent() };
-				auto const draw_width { static_cast<float>(
-					wayland_draw_extent.width) };
-				auto const draw_height { static_cast<float>(
-					wayland_draw_extent.height) };
-				if (draw_width > 0.0f && draw_height > 0.0f) {
-					gl.set_transform(smath::Mat4::identity());
-					gl.set_culling(false);
-					gl.use_pipeline(m_renderer->wayland_pipeline());
-					for (auto *surface : m_wayland->surfaces()) {
-						auto buffer { surface->current_buffer() };
-						if (!buffer) {
-							continue;
-						}
-						auto texture { make_shm_texture(*buffer) };
-						if (!texture) {
-							continue;
-						}
-						auto const width { static_cast<float>(buffer->width) };
-						auto const height { static_cast<float>(
-							buffer->height) };
-						auto const size { smath::Vec2 {
-							(width / draw_width) * 2.0f,
-							(height / draw_height) * 2.0f,
-						} };
-						auto const pos { smath::Vec2 {
-							-1.0f, 1.0f - size.y() } };
-						auto image { m_renderer->create_image(
-							*texture, vk::ImageUsageFlagBits::eSampled) };
-						gl.set_texture(&image);
-						gl.draw_rectangle(pos, size);
-						gl.flush();
-						gl.set_texture(std::nullopt);
-						m_renderer->destroy_image_later(image);
+			assert(m_wayland);
+
+			auto const wayland_draw_extent { m_renderer->draw_extent() };
+			auto const draw_width { static_cast<float>(
+				wayland_draw_extent.width) };
+			auto const draw_height { static_cast<float>(
+				wayland_draw_extent.height) };
+			if (draw_width > 0.0f && draw_height > 0.0f) {
+				gl.set_transform(smath::Mat4::identity());
+				gl.set_culling(false);
+				gl.use_pipeline(m_renderer->wayland_pipeline());
+				for (auto *surface : m_wayland->surfaces()) {
+					auto buffer { surface->current_buffer() };
+					if (!buffer) {
+						continue;
 					}
-					gl.use_pipeline(m_renderer->mesh_pipeline());
-					gl.set_culling(true);
+					auto texture { make_shm_texture(*buffer) };
+					if (!texture) {
+						continue;
+					}
+					auto const width { static_cast<float>(buffer->width) };
+					auto const height { static_cast<float>(buffer->height) };
+					auto const size { smath::Vec2 {
+						(width / draw_width) * 2.0f,
+						(height / draw_height) * 2.0f,
+					} };
+					auto const pos { smath::Vec2 { -1.0f, 1.0f - size.y() } };
+					auto image { m_renderer->create_image(
+						*texture, vk::ImageUsageFlagBits::eSampled) };
+					gl.set_texture(&image);
+					gl.draw_rectangle(pos, size);
+					gl.flush();
+					gl.set_texture(std::nullopt);
+					m_renderer->destroy_image_later(image);
 				}
+				gl.use_pipeline(m_renderer->mesh_pipeline());
+				gl.set_culling(true);
 			}
 		} };
 
