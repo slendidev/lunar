@@ -1,6 +1,17 @@
 #include "Util.h"
 
+#include <cstdlib>
 #include <span>
+
+namespace Lunar {
+
+auto tracy_runtime_enabled() -> bool
+{
+	static bool enabled = std::getenv("LUNAR_NO_TRACY") == nullptr;
+	return enabled;
+}
+
+} // namespace Lunar
 
 namespace vkutil {
 

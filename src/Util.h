@@ -37,9 +37,27 @@ template<typename F> privDefer<F> defer_func(F f) { return privDefer<F>(f); }
 	} while (0)
 
 #if defined(TRACY_ENABLE)
-#	define GZoneScopedN(name) ZoneScopedN(name)
+#	include <tracy/Tracy.hpp>
+namespace Lunar {
+auto tracy_runtime_enabled() -> bool;
+}
+#	define GZoneScopedN(name) \
+		do { \
+			if (Lunar::tracy_runtime_enabled()) { \
+				ZoneScopedN(name); \
+			} \
+		} while (0)
+#	define GFrameMark() \
+		do { \
+			if (Lunar::tracy_runtime_enabled()) { \
+				FrameMark; \
+			} \
+		} while (0)
 #else
 #	define GZoneScopedN(name) \
+		do { \
+		} while (0)
+#	define GFrameMark() \
 		do { \
 		} while (0)
 #endif

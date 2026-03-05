@@ -3,10 +3,12 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -14,17 +16,22 @@
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
+#if defined(__linux__)
+#	include <unistd.h>
+#endif
 
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_vulkan.h>
 #include <VkBootstrap.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
+#include <vk_mem_alloc.h>
 
 #if defined(TRACY_ENABLE)
 #	include <tracy/Tracy.hpp>
 #endif
 
+#include "AllocTracker.h"
 #include "DescriptorLayoutBuilder.h"
 #include "DescriptorWriter.h"
 #include "GraphicsPipelineBuilder.h"
@@ -221,8 +228,43 @@ auto VulkanRenderer::GL::flush() -> void
 	auto const index_data_size { m_indices.size() * sizeof(uint32_t) };
 	auto const staging_size { vertex_data_size + index_data_size };
 
-	auto staging { m_renderer.create_buffer(staging_size,
-		vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY) };
+	auto &frame { m_renderer.m_vk.get_current_frame() };
+	auto acquire_buffer
+	    = [&](std::vector<AllocatedBuffer> &pool,
+	          std::vector<std::size_t> &sizes, std::size_t &cursor,
+	          std::size_t required, vk::BufferUsageFlags usage,
+	          VmaMemoryUsage memory_usage) -> AllocatedBuffer & {
+		if (cursor < pool.size()) {
+			if (sizes[cursor] < required) {
+				m_renderer.destroy_buffer(pool[cursor]);
+				pool[cursor]
+				    = m_renderer.create_buffer(required, usage, memory_usage);
+				sizes[cursor] = required;
+			}
+			return pool[cursor++];
+		}
+
+		pool.emplace_back(
+		    m_renderer.create_buffer(required, usage, memory_usage));
+		sizes.emplace_back(required);
+		++cursor;
+		return pool.back();
+	};
+
+	auto &staging = acquire_buffer(frame.gl_staging_pool,
+	    frame.gl_staging_sizes, frame.gl_staging_cursor, staging_size,
+	    vk::BufferUsageFlagBits::eTransferSrc, VMA_MEMORY_USAGE_CPU_ONLY);
+	auto &vertex_buffer = acquire_buffer(frame.gl_vertex_pool,
+	    frame.gl_vertex_sizes, frame.gl_vertex_cursor, vertex_data_size,
+	    vk::BufferUsageFlagBits::eVertexBuffer
+	        | vk::BufferUsageFlagBits::eTransferDst
+	        | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+	    VMA_MEMORY_USAGE_GPU_ONLY);
+	auto &index_buffer = acquire_buffer(frame.gl_index_pool,
+	    frame.gl_index_sizes, frame.gl_index_cursor, index_data_size,
+	    vk::BufferUsageFlagBits::eIndexBuffer
+	        | vk::BufferUsageFlagBits::eTransferDst,
+	    VMA_MEMORY_USAGE_GPU_ONLY);
 
 	void *staging_dst = staging.info.pMappedData;
 	bool staging_mapped_here { false };
@@ -232,22 +274,12 @@ auto VulkanRenderer::GL::flush() -> void
 		assert(res == VK_SUCCESS);
 		staging_mapped_here = true;
 	}
-	memcpy(staging_dst, m_vertices.data(), vertex_data_size);
-	memcpy(reinterpret_cast<uint8_t *>(staging_dst) + vertex_data_size,
+	std::memcpy(staging_dst, m_vertices.data(), vertex_data_size);
+	std::memcpy(reinterpret_cast<uint8_t *>(staging_dst) + vertex_data_size,
 	    m_indices.data(), index_data_size);
 	if (staging_mapped_here) {
 		vmaUnmapMemory(m_renderer.m_vk.allocator, staging.allocation);
 	}
-
-	auto vertex_buffer { m_renderer.create_buffer(vertex_data_size,
-		vk::BufferUsageFlagBits::eVertexBuffer
-		    | vk::BufferUsageFlagBits::eTransferDst
-		    | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-		VMA_MEMORY_USAGE_GPU_ONLY) };
-	auto index_buffer { m_renderer.create_buffer(index_data_size,
-		vk::BufferUsageFlagBits::eIndexBuffer
-		    | vk::BufferUsageFlagBits::eTransferDst,
-		VMA_MEMORY_USAGE_GPU_ONLY) };
 
 	m_renderer.immediate_submit(
 	    [&](vk::CommandBuffer cmd) {
@@ -266,8 +298,6 @@ auto VulkanRenderer::GL::flush() -> void
 	    },
 	    /*flush_frame_deletion_queue=*/false,
 	    /*clear_frame_descriptors=*/false);
-
-	m_renderer.destroy_buffer(staging);
 
 	auto cmd { m_cmd };
 
@@ -311,11 +341,6 @@ auto VulkanRenderer::GL::flush() -> void
 
 	cmd.bindIndexBuffer(index_buffer.buffer, 0, vk::IndexType::eUint32);
 	cmd.drawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
-
-	m_renderer.m_vk.get_current_frame().deletion_queue.emplace([=, this]() {
-		m_renderer.destroy_buffer(index_buffer);
-		m_renderer.destroy_buffer(vertex_buffer);
-	});
 
 	m_vertices.clear();
 	m_indices.clear();
@@ -659,6 +684,9 @@ VulkanRenderer::VulkanRenderer(SDL_Window *window, Logger &logger,
 		throw std::runtime_error("VulkanRenderer requires a valid window");
 	}
 
+	m_mem_stats_enabled = std::getenv("LUNAR_MEM_STATS") != nullptr;
+	m_last_mem_stats = std::chrono::steady_clock::now();
+
 	m_use_kms = false;
 	m_imgui_enabled = true;
 
@@ -684,6 +712,8 @@ VulkanRenderer::VulkanRenderer(KmsSurfaceConfig /*config*/, Logger &logger,
 {
 	m_use_kms = true;
 	m_imgui_enabled = false;
+	m_mem_stats_enabled = std::getenv("LUNAR_MEM_STATS") != nullptr;
+	m_last_mem_stats = std::chrono::steady_clock::now();
 
 	vk_init();
 	swapchain_init();
@@ -700,6 +730,27 @@ VulkanRenderer::~VulkanRenderer()
 
 	for (auto &frame_data : m_vk.frames) {
 		frame_data.deletion_queue.flush();
+		for (auto &buffer : frame_data.gl_staging_pool) {
+			if (buffer.buffer) {
+				destroy_buffer(buffer);
+			}
+		}
+		for (auto &buffer : frame_data.gl_vertex_pool) {
+			if (buffer.buffer) {
+				destroy_buffer(buffer);
+			}
+		}
+		for (auto &buffer : frame_data.gl_index_pool) {
+			if (buffer.buffer) {
+				destroy_buffer(buffer);
+			}
+		}
+		frame_data.gl_staging_pool.clear();
+		frame_data.gl_staging_sizes.clear();
+		frame_data.gl_vertex_pool.clear();
+		frame_data.gl_vertex_sizes.clear();
+		frame_data.gl_index_pool.clear();
+		frame_data.gl_index_sizes.clear();
 		frame_data.main_command_buffer.reset();
 		frame_data.command_pool.reset();
 		frame_data.swapchain_semaphore.reset();
@@ -1653,6 +1704,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 		return;
 	}
 
+	log_memory_stats();
 	process_render_commands();
 
 	auto &frame { m_vk.get_current_frame() };
@@ -1660,6 +1712,12 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    m_device.waitForFences(frame.render_fence.get(), true, 1'000'000'000));
 	frame.deletion_queue.flush();
 	frame.frame_descriptors.clear_pools(m_vkb.dev.device);
+	frame.gl_staging_cursor = 0;
+	frame.gl_vertex_cursor = 0;
+	frame.gl_index_cursor = 0;
+	frame.gl_staging_cursor = 0;
+	frame.gl_vertex_cursor = 0;
+	frame.gl_index_cursor = 0;
 	emit_frame_screenshot(frame);
 #if defined(TRACY_ENABLE)
 	emit_tracy_frame_image(frame);
@@ -1744,7 +1802,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 	    vk::ImageLayout::eColorAttachmentOptimal,
 	    vk::ImageLayout::eTransferSrcOptimal);
 
-	if (frame.screenshot_buffer.buffer) {
+	if (frame.screenshot_buffer.buffer && m_screenshot_requested) {
 		vk::BufferImageCopy screenshot_copy {};
 		screenshot_copy.imageSubresource.aspectMask
 		    = vk::ImageAspectFlagBits::eColor;
@@ -1759,6 +1817,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 		    vk::ImageLayout::eTransferSrcOptimal,
 		    frame.screenshot_buffer.buffer, screenshot_copy);
 		frame.screenshot_ready = true;
+		m_screenshot_requested = false;
 	} else {
 		frame.screenshot_ready = false;
 	}
@@ -1766,6 +1825,7 @@ auto VulkanRenderer::render(std::function<void(GL &)> const &record) -> void
 #if defined(TRACY_ENABLE)
 	constexpr std::uint64_t tracy_frame_stride { 10 };
 	bool const tracy_capture { TracyIsConnected
+		&& Lunar::tracy_runtime_enabled()
 		&& (m_vk.frame_number % tracy_frame_stride == 0) };
 	frame.tracy_frame_ready = false;
 	frame.frame_image_ready = false;
@@ -1876,6 +1936,7 @@ auto VulkanRenderer::render_to_image(vk::Image target_image,
 		return;
 	}
 
+	log_memory_stats();
 	process_render_commands();
 
 	auto &frame { m_vk.get_current_frame() };
@@ -1961,6 +2022,59 @@ auto VulkanRenderer::draw_imgui(
 	    ImGui::GetDrawData(), static_cast<VkCommandBuffer>(cmd));
 
 	cmd.endRendering();
+}
+
+namespace {
+
+auto read_rss_kb() -> std::optional<std::size_t>
+{
+#if defined(__linux__)
+	std::ifstream statm("/proc/self/statm");
+	long total_pages { 0 };
+	long resident_pages { 0 };
+	if (!(statm >> total_pages >> resident_pages)) {
+		return std::nullopt;
+	}
+	long page_size = sysconf(_SC_PAGESIZE);
+	if (page_size <= 0) {
+		return std::nullopt;
+	}
+	auto bytes = static_cast<std::size_t>(resident_pages)
+	    * static_cast<std::size_t>(page_size);
+	return bytes / 1024;
+#else
+	return std::nullopt;
+#endif
+}
+
+} // namespace
+
+auto VulkanRenderer::log_memory_stats() -> void
+{
+	if (!m_mem_stats_enabled || !m_vk.allocator) {
+		return;
+	}
+
+	auto const now = std::chrono::steady_clock::now();
+	if (now - m_last_mem_stats < std::chrono::seconds(1)) {
+		return;
+	}
+	m_last_mem_stats = now;
+
+	VmaTotalStatistics stats {};
+	vmaCalculateStatistics(m_vk.allocator, &stats);
+	auto const alloc_bytes = stats.total.statistics.allocationBytes;
+	auto const block_bytes = stats.total.statistics.blockBytes;
+
+	auto const rss_kb = read_rss_kb();
+	if (rss_kb) {
+		m_logger.info("Mem stats: rss={} KB, vma_alloc={} MB, vma_blocks={} MB",
+		    *rss_kb, alloc_bytes / (1024 * 1024), block_bytes / (1024 * 1024));
+	} else {
+		m_logger.info("Mem stats: vma_alloc={} MB, vma_blocks={} MB",
+		    alloc_bytes / (1024 * 1024), block_bytes / (1024 * 1024));
+	}
+	log_top_allocators(m_logger, 8);
 }
 
 auto VulkanRenderer::create_swapchain(uint32_t width, uint32_t height) -> void
@@ -2188,6 +2302,7 @@ auto VulkanRenderer::destroy_screenshot_buffers() -> void
 
 	m_latest_screenshot_pixels.clear();
 	m_latest_screenshot_extent = vk::Extent2D {};
+	m_latest_screenshot_layout = vk::ImageLayout::eUndefined;
 	if (m_latest_screenshot) {
 		destroy_image(*m_latest_screenshot);
 		m_latest_screenshot.reset();
@@ -2239,19 +2354,82 @@ auto VulkanRenderer::emit_frame_screenshot(FrameData &frame) -> void
 		destination[i + 3] = 0xff;
 	}
 
-	auto const screenshot_flags { vk::ImageUsageFlagBits::eSampled };
 	auto const screenshot_extent { vk::Extent3D {
 		extent.width, extent.height, 1 } };
+	auto const same_extent { m_latest_screenshot
+		&& m_latest_screenshot_extent.width == extent.width
+		&& m_latest_screenshot_extent.height == extent.height };
 
-	if (m_latest_screenshot) {
-		destroy_image(*m_latest_screenshot);
-		m_latest_screenshot.reset();
+	if (!same_extent) {
+		if (m_latest_screenshot) {
+			destroy_image(*m_latest_screenshot);
+			m_latest_screenshot.reset();
+		}
+		auto const screenshot_flags { vk::ImageUsageFlagBits::eSampled
+			| vk::ImageUsageFlagBits::eTransferDst };
+		m_latest_screenshot = create_image(
+		    screenshot_extent, vk::Format::eR8G8B8A8Unorm, screenshot_flags);
+		m_latest_screenshot_layout = vk::ImageLayout::eUndefined;
 	}
 
-	m_latest_screenshot = create_image(destination.data(), screenshot_extent,
-	    vk::Format::eR8G8B8A8Unorm, screenshot_flags);
-	m_latest_screenshot_pixels = destination;
-	m_latest_screenshot_extent = extent;
+	if (m_latest_screenshot) {
+		auto const upload_buffer {
+			create_buffer(byte_count, vk::BufferUsageFlagBits::eTransferSrc,
+			    VMA_MEMORY_USAGE_CPU_TO_GPU),
+		};
+		VmaAllocationInfo upload_info {};
+		vmaGetAllocationInfo(
+		    m_vk.allocator, upload_buffer.allocation, &upload_info);
+
+		void *upload_mapped { upload_info.pMappedData };
+		bool upload_mapped_here { false };
+		if (!upload_mapped) {
+			auto const map_result { vmaMapMemory(
+				m_vk.allocator, upload_buffer.allocation, &upload_mapped) };
+			if (map_result != VK_SUCCESS) {
+				destroy_buffer(upload_buffer);
+				if (mapped_here) {
+					vmaUnmapMemory(
+					    m_vk.allocator, frame.screenshot_buffer.allocation);
+				}
+				return;
+			}
+			upload_mapped_here = true;
+		}
+		std::memcpy(upload_mapped, destination.data(), byte_count);
+
+		immediate_submit(
+		    [&](vk::CommandBuffer cmd) {
+			    vkutil::transition_image(cmd, m_latest_screenshot->image,
+			        m_latest_screenshot_layout,
+			        vk::ImageLayout::eTransferDstOptimal);
+
+			    vk::BufferImageCopy copy_region {};
+			    copy_region.imageSubresource.aspectMask
+			        = vk::ImageAspectFlagBits::eColor;
+			    copy_region.imageSubresource.mipLevel = 0;
+			    copy_region.imageSubresource.baseArrayLayer = 0;
+			    copy_region.imageSubresource.layerCount = 1;
+			    copy_region.imageExtent = screenshot_extent;
+			    cmd.copyBufferToImage(upload_buffer.buffer,
+			        m_latest_screenshot->image,
+			        vk::ImageLayout::eTransferDstOptimal, copy_region);
+
+			    vkutil::transition_image(cmd, m_latest_screenshot->image,
+			        vk::ImageLayout::eTransferDstOptimal,
+			        vk::ImageLayout::eShaderReadOnlyOptimal);
+		    },
+		    /*flush_frame_deletion_queue=*/false,
+		    /*clear_frame_descriptors=*/false);
+
+		if (upload_mapped_here) {
+			vmaUnmapMemory(m_vk.allocator, upload_buffer.allocation);
+		}
+		destroy_buffer(upload_buffer);
+		m_latest_screenshot_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+		m_latest_screenshot_pixels = destination;
+		m_latest_screenshot_extent = extent;
+	}
 
 	if (mapped_here) {
 		vmaUnmapMemory(m_vk.allocator, frame.screenshot_buffer.allocation);
@@ -2402,7 +2580,8 @@ auto VulkanRenderer::emit_tracy_frame_image(FrameData &frame) -> void
 		destination[i + 3] = source[i + 3];
 	}
 
-	if (!frame.tracy_frame_ready || !TracyIsConnected) {
+	if (!frame.tracy_frame_ready || !TracyIsConnected
+	    || !Lunar::tracy_runtime_enabled()) {
 		frame.frame_image_ready = false;
 		frame.tracy_frame_ready = false;
 		if (mapped_here) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -224,6 +225,9 @@ struct VulkanRenderer {
 	{
 		return m_latest_screenshot;
 	}
+	auto set_imgui_enabled(bool enabled) -> void { m_imgui_enabled = enabled; }
+	auto imgui_enabled() const -> bool { return m_imgui_enabled; }
+	auto request_screenshot() -> void { m_screenshot_requested = true; }
 	auto get_screenshot_pixels() const
 	    -> std::optional<VulkanRenderer::ScreenshotPixels>
 	{
@@ -246,6 +250,8 @@ struct VulkanRenderer {
 	std::optional<AllocatedImage> m_latest_screenshot {};
 	std::vector<std::uint8_t> m_latest_screenshot_pixels {};
 	vk::Extent2D m_latest_screenshot_extent {};
+	vk::ImageLayout m_latest_screenshot_layout { vk::ImageLayout::eUndefined };
+	bool m_screenshot_requested { false };
 
 private:
 	struct RenderCommand {
@@ -270,6 +276,7 @@ private:
 
 	auto draw_imgui(vk::CommandBuffer cmd, vk::ImageView target_image_view)
 	    -> void;
+	auto log_memory_stats() -> void;
 
 	auto create_swapchain(uint32_t width, uint32_t height) -> void;
 	auto create_draw_image(uint32_t width, uint32_t height) -> void;
@@ -402,6 +409,8 @@ private:
 	std::vector<RenderCommand> m_pending_render_commands;
 	bool m_use_kms { false };
 	bool m_imgui_enabled { true };
+	bool m_mem_stats_enabled { false };
+	std::chrono::steady_clock::time_point m_last_mem_stats {};
 	std::optional<KmsState> m_kms_state {};
 	vk::PhysicalDevice m_kms_physical_device {};
 	vk::Extent2D m_kms_extent {};

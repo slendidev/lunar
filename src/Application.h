@@ -99,9 +99,11 @@ private:
 	bool m_running { true };
 	bool m_mouse_captured { false };
 	bool m_show_imgui { false };
+	bool m_imgui_allowed { true };
 	bool m_window_focused { true };
 	int m_ctrl_pressed_count { 0 };
 	std::uint32_t m_screenshot_index { 0 };
+	bool m_pending_screenshot { false };
 
 	double m_mouse_x { 0.0 };
 	double m_mouse_y { 0.0 };
@@ -114,6 +116,10 @@ private:
 
 	Camera m_camera;
 	PolarCoordinate m_cursor;
+
+	auto handle_pending_screenshot() -> void;
+	auto save_screenshot(VulkanRenderer::ScreenshotPixels const &screenshot)
+	    -> void;
 
 	static inline std::array<smath::Vec3, XR_HAND_JOINT_COUNT_EXT>
 	    m_left_joints {};

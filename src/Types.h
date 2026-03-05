@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -44,6 +45,15 @@ struct FrameData {
 	vk::Extent2D screenshot_extent {};
 	std::vector<std::uint8_t> screenshot_rgba;
 	bool screenshot_ready { false };
+	std::vector<AllocatedBuffer> gl_staging_pool {};
+	std::vector<std::size_t> gl_staging_sizes {};
+	std::size_t gl_staging_cursor { 0 };
+	std::vector<AllocatedBuffer> gl_vertex_pool {};
+	std::vector<std::size_t> gl_vertex_sizes {};
+	std::size_t gl_vertex_cursor { 0 };
+	std::vector<AllocatedBuffer> gl_index_pool {};
+	std::vector<std::size_t> gl_index_sizes {};
+	std::size_t gl_index_cursor { 0 };
 };
 
 struct Vertex {

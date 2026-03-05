@@ -708,7 +708,15 @@ auto Application::run() -> void
 	SDL_Event e;
 	bool const use_sdl { (m_backend == Backend::SDL) };
 	bool const openxr_enabled { m_openxr != nullptr };
-	bool const use_imgui { use_sdl && !openxr_enabled };
+	bool const env_disable_imgui { std::getenv("LUNAR_NO_IMGUI") != nullptr };
+	m_imgui_allowed = use_sdl && !openxr_enabled && !env_disable_imgui;
+	bool const use_imgui { m_imgui_allowed };
+	if (!m_imgui_allowed) {
+		m_show_imgui = false;
+		if (m_renderer) {
+			m_renderer->set_imgui_enabled(false);
+		}
+	}
 
 	if (use_imgui) {
 		ImGuiIO &io = ImGui::GetIO();
@@ -899,25 +907,16 @@ auto Application::run() -> void
 			bool debug_open { ImGui::Begin("Debug Info", nullptr,
 				ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize) };
 			if (debug_open) {
-				ImGui::Text("%s", std::format("FPS: {:.2f}", fps).c_str());
-				ImGui::Text("%s",
-				    std::format("Cam pos: ({:.2f}, {:.2f}, {:.2f})",
-				        m_camera.position.x(), m_camera.position.y(),
-				        m_camera.position.z())
-				        .c_str());
-				ImGui::Text("%s",
-				    std::format("Cam tgt: ({:.2f}, {:.2f}, {:.2f})",
-				        m_camera.target.x(), m_camera.target.y(),
-				        m_camera.target.z())
-				        .c_str());
-				ImGui::Text("%s",
-				    std::format("Cam up:  ({:.2f}, {:.2f}, {:.2f})",
-				        m_camera.up.x(), m_camera.up.y(), m_camera.up.z())
-				        .c_str());
-				ImGui::Text("%s",
-				    std::format("Cursor r/theta/phi: {:.2f}, {:.2f}, {:.2f}",
-				        m_cursor.r, m_cursor.theta, m_cursor.phi)
-				        .c_str());
+				ImGui::Text("FPS: %.2f", fps);
+				ImGui::Text("Cam pos: (%.2f, %.2f, %.2f)",
+				    m_camera.position.x(), m_camera.position.y(),
+				    m_camera.position.z());
+				ImGui::Text("Cam tgt: (%.2f, %.2f, %.2f)", m_camera.target.x(),
+				    m_camera.target.y(), m_camera.target.z());
+				ImGui::Text("Cam up:  (%.2f, %.2f, %.2f)", m_camera.up.x(),
+				    m_camera.up.y(), m_camera.up.z());
+				ImGui::Text("Cursor r/theta/phi: %.2f, %.2f, %.2f", m_cursor.r,
+				    m_cursor.theta, m_cursor.phi);
 			}
 			ImGui::End();
 			ImGui::PopStyleColor();
@@ -1130,8 +1129,9 @@ auto Application::run() -> void
 		} else {
 			m_renderer->render(record_scene);
 		}
+		handle_pending_screenshot();
 #if defined(TRACY_ENABLE)
-		FrameMark;
+		GFrameMark();
 #endif
 	}
 }
@@ -2124,42 +2124,22 @@ auto Application::handle_keyboard_event(libinput_event_keyboard *event) -> void
 		}
 	}
 
-	if (m_backend == Backend::SDL && !m_openxr && pressed && key == KEY_F11
-	    && m_ctrl_pressed_count > 0) {
+	if (m_backend == Backend::SDL && !m_openxr && m_imgui_allowed && pressed
+	    && key == KEY_F11 && m_ctrl_pressed_count > 0) {
 		bool const new_show_imgui { !m_show_imgui };
 		m_show_imgui = new_show_imgui;
 		mouse_captured(!new_show_imgui);
 	}
 
 	if (pressed && key == KEY_F12) {
-		auto screenshot { std::optional<VulkanRenderer::ScreenshotPixels> {} };
+		m_pending_screenshot = true;
 		if (m_renderer) {
-			screenshot = m_renderer->get_screenshot_pixels();
+			m_renderer->request_screenshot();
 		}
-
-		if (!screenshot) {
-			m_logger.warn("Screenshot not ready");
-			return;
-		}
-
-		auto const extent { screenshot->extent };
-		auto const stride { static_cast<int>(extent.width * 4) };
-		auto const index { m_screenshot_index++ };
-		auto const now { std::chrono::system_clock::now() };
-		auto filename { std::format(
-			"screenshot_{:%Y%m%d_%H%M%S}_{:04}.png", now, index) };
-		int const result { stbi_write_png(filename.c_str(),
-			static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
-			screenshot->pixels.data(), stride) };
-
-		if (result == 0) {
-			m_logger.err("Failed to write screenshot {}", filename);
-		} else {
-			m_logger.info("Saved screenshot {}", filename);
-		}
+		return;
 	}
 
-	if (m_backend == Backend::SDL) {
+	if (m_backend == Backend::SDL && m_imgui_allowed) {
 		if (auto imgui_key { linux_key_to_imgui(key) }) {
 			if (m_show_imgui)
 				ImGui::GetIO().AddKeyEvent(*imgui_key, pressed);
@@ -2190,6 +2170,41 @@ auto Application::clamp_mouse_to_window(int width, int height) -> void
 
 	ImGui::GetIO().AddMousePosEvent(
 	    static_cast<float>(m_mouse_x), static_cast<float>(m_mouse_y));
+}
+
+auto Application::handle_pending_screenshot() -> void
+{
+	if (!m_pending_screenshot || !m_renderer) {
+		return;
+	}
+
+	auto screenshot { m_renderer->get_screenshot_pixels() };
+	if (!screenshot) {
+		return;
+	}
+
+	save_screenshot(*screenshot);
+	m_pending_screenshot = false;
+}
+
+auto Application::save_screenshot(
+    VulkanRenderer::ScreenshotPixels const &screenshot) -> void
+{
+	auto const extent { screenshot.extent };
+	auto const stride { static_cast<int>(extent.width * 4) };
+	auto const index { m_screenshot_index++ };
+	auto const now { std::chrono::system_clock::now() };
+	auto filename { std::format(
+		"screenshot_{:%Y%m%d_%H%M%S}_{:04}.png", now, index) };
+	int const result { stbi_write_png(filename.c_str(),
+		static_cast<int>(extent.width), static_cast<int>(extent.height), 4,
+		screenshot.pixels.data(), stride) };
+
+	if (result == 0) {
+		m_logger.err("Failed to write screenshot {}", filename);
+	} else {
+		m_logger.info("Saved screenshot {}", filename);
+	}
 }
 
 auto Application::mouse_captured(bool new_state) -> void
