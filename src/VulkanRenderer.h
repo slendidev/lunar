@@ -72,10 +72,12 @@ struct VulkanRenderer {
 
 			push_vertex(pos);
 		}
+
 		auto color(smath::Vec3 const &rgb) -> void;
 		auto color(smath::Vec4 const &rgba) -> void;
 		auto uv(smath::Vec2 const &uv) -> void;
 		auto normal(smath::Vec3 const &normal) -> void;
+
 		auto set_texture(std::optional<AllocatedImage const *> texture
 		    = std::nullopt) -> void;
 		auto set_culling(bool enabled) -> void;

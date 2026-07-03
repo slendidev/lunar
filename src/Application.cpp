@@ -901,7 +901,7 @@ auto Application::run() -> void
 
 			ImGui::NewFrame();
 
-			ImGui::SetNextWindowSize({ 300, 100 });
+			ImGui::SetNextWindowSize({ 300, 120 });
 			ImGui::SetNextWindowPos({ 0, 0 });
 			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4 { 0, 0, 0, 0.5f });
 			bool debug_open { ImGui::Begin("Debug Info", nullptr,
@@ -917,6 +917,9 @@ auto Application::run() -> void
 				    m_camera.up.y(), m_camera.up.z());
 				ImGui::Text("Cursor r/theta/phi: %.2f, %.2f, %.2f", m_cursor.r,
 				    m_cursor.theta, m_cursor.phi);
+				ImGui::Text("%s",
+				    std::format("Wayland display: {}", m_wayland->socket_name())
+				        .c_str());
 			}
 			ImGui::End();
 			ImGui::PopStyleColor();
@@ -1076,11 +1079,6 @@ auto Application::run() -> void
 			    { 0, 0.5f }, { 0.5f, 0.5f }, { Colors::TEAL, 1.0f });
 
 			gl.set_transform(view_projection);
-			gl.draw_sphere(m_camera.target, 0.01f);
-
-			if (m_openxr && m_openxr->hand_tracking_supported) {
-				render_hands(gl, view_projection);
-			}
 
 			assert(m_wayland);
 
@@ -1090,9 +1088,9 @@ auto Application::run() -> void
 			auto const draw_height { static_cast<float>(
 				wayland_draw_extent.height) };
 			if (draw_width > 0.0f && draw_height > 0.0f) {
-				gl.set_transform(smath::Mat4::identity());
-				gl.set_culling(true);
 				gl.use_pipeline(m_renderer->wayland_pipeline());
+				gl.set_culling(true);
+
 				for (auto *surface : m_wayland->surfaces()) {
 					auto buffer { surface->current_buffer() };
 					if (!buffer) {
@@ -1102,23 +1100,23 @@ auto Application::run() -> void
 					if (!texture) {
 						continue;
 					}
-					auto const width { static_cast<float>(buffer->width) };
-					auto const height { static_cast<float>(buffer->height) };
-					auto const size { smath::Vec2 {
-						(width / draw_width) * 2.0f,
-						(height / draw_height) * 2.0f,
-					} };
-					auto const pos { smath::Vec2 { -1.0f, 1.0f - size.y() } };
 					auto image { m_renderer->create_image(
 						*texture, vk::ImageUsageFlagBits::eSampled) };
-					gl.set_texture(&image);
-					gl.draw_rectangle(pos, size);
-					gl.flush();
-					gl.set_texture(std::nullopt);
+
+					gl.draw_texture_cyl(
+					    &image, smath::Vec3 {}, {}, 7, 0.01, true);
+
+					gl.set_culling(false);
 					m_renderer->destroy_image_later(image);
 				}
-				gl.use_pipeline(m_renderer->mesh_pipeline());
-				gl.set_culling(true);
+			}
+			gl.use_pipeline(m_renderer->mesh_pipeline());
+			gl.set_culling(true);
+
+			gl.draw_sphere(m_camera.target, 0.01f);
+
+			if (m_openxr && m_openxr->hand_tracking_supported) {
+				render_hands(gl, view_projection);
 			}
 		} };
 

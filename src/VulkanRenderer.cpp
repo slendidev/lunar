@@ -517,6 +517,96 @@ auto VulkanRenderer::GL::draw_sphere(smath::Vec3 center, float radius,
 	end();
 }
 
+auto VulkanRenderer::GL::draw_texture_cyl(AllocatedImage const *texture,
+    smath::Vec3 sphere_center, PolarCoordinate coord, float rad, float scale,
+    bool y_flip) -> void
+{
+	// midpoint on the sphere where the panel should sit (its center)
+	auto fwd { coord.to_vec3() };
+	if (fwd.magnitude() < 1e-6f)
+		fwd = smath::Vec3 { 0, 0, 1 };
+	fwd = fwd.normalized();
+
+	// build a local tangent frame at that point (right, up, forward)
+	smath::Vec3 worldUp { 0, 1, 0 };
+	if (fabsf(worldUp.dot(fwd)) > 0.99f)
+		worldUp = smath::Vec3 { 1, 0, 0 };
+	auto const right = worldUp.cross(fwd).normalized();
+	auto const up = fwd.cross(right).normalized();
+
+	float const r = fabsf(rad);
+	float const arc_len
+	    = (float)texture->extent.width * scale; // world units across
+	float const theta = arc_len / r; // total horizontal FOV in radians
+	float const half_t = 0.5f * theta;
+	float const half_h = 0.5f * (float)texture->extent.height * scale;
+
+	// shift so cylinder's surface midpoint lands exactly at coord.r from
+	// sphere_center
+	auto const delta
+	    = sphere_center + fwd * (coord.r - r) + smath::Vec3 { 0, 0, 0 };
+
+	// tessellation: about 3deg per slice (min 8, max 1024)
+	int slices = (int)ceilf(fmaxf(theta * (180.0f / M_PI) / 3.0f, 8.0f));
+	if (slices > 1024)
+		slices = 1024;
+
+	float vt = y_flip ? 1.0f : 0.0f;
+	float vb = y_flip ? 0.0f : 1.0f;
+
+	this->set_texture(texture);
+	color(smath::Vec3 { 1.0f, 1.0f, 1.0f });
+	this->begin(GeometryKind::Quads);
+
+	for (int i = 0; i < slices; ++i) {
+		auto const u0 { (float)i / (float)slices };
+		auto const u1 { (float)(i + 1) / (float)slices };
+
+		auto const aL { -half_t + theta * u0 };
+		auto const aR { -half_t + theta * u1 };
+
+		// local outward directions on the cylindrical surface
+		auto nL { right * sinf(aL) + fwd * cosf(aL) };
+		auto nR { right * sinf(aR) + fwd * cosf(aR) };
+
+		if (rad < 0.0f) {
+			nL = nL * -1.0;
+			nR = nR * -1.0;
+		}
+
+		// surface points (center band), then top/bottom by +/- up*half_h
+		auto const cL { delta + nL * r };
+		auto const cR { delta + nR * r };
+
+		auto const pLT { cL + up * half_h };
+		auto const pLB { cL + up * (-half_h) };
+		auto const pRT { cR + up * half_h };
+		auto const pRB { cR + up * (-half_h) };
+
+		auto const U0 = 1.0f - u0;
+		auto const U1 = 1.0f - u1;
+
+		normal(nL);
+		uv(smath::Vec2 { U0, vt });
+		vert(pLT);
+
+		normal(nR);
+		uv(smath::Vec2 { U1, vt });
+		vert(pRT);
+
+		normal(nL);
+		uv(smath::Vec2 { U0, vb });
+		vert(pLB);
+
+		normal(nR);
+		uv(smath::Vec2 { U1, vb });
+		vert(pRB);
+	}
+
+	this->end();
+	this->set_texture();
+}
+
 auto VulkanRenderer::GL::draw_mesh(GPUMeshBuffers const &mesh,
     smath::Mat4 const &transform, uint32_t index_count, uint32_t first_index,
     int32_t vertex_offset) -> void
