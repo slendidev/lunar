@@ -1,6 +1,6 @@
 #pragma once
 
-#include <smath.hpp>
+#include <smath/smath.hpp>
 
 namespace Lunar::Colors {
 

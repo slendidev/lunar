@@ -57,7 +57,7 @@
 #include <libudev.h>
 #include <linux/input-event-codes.h>
 
-#include <smath.hpp>
+#include <smath/smath.hpp>
 
 #include "Util.h"
 #include "VulkanRenderer.h"

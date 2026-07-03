@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-#include <smath.hpp>
+#include <smath/smath.hpp>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.hpp>
 

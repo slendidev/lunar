@@ -12,7 +12,7 @@
 #include <linux/input-event-codes.h>
 #include <openxr/openxr.h>
 
-#include "smath.hpp"
+#include <smath/smath.hpp>
 
 #include "Loader.h"
 #include "Logger.h"
